@@ -4,9 +4,15 @@
  * Requests go to `/api/*`, which the Vite dev server proxies to the backend
  * (see vite.config.ts). In production, serve the built frontend behind the same
  * origin as the API, or set up an equivalent `/api` reverse-proxy.
+ *
+ * Token injection: if an active session exists in the auth store, the
+ * `X-Session-Token` header is added to every request automatically.
+ * On a 401 response while a token is present, the store is cleared so the
+ * UI returns to the login form (handles backend restart / expired sessions).
  */
 
-const BASE = "/api"
+import { API_BASE, URLS } from "@/constants"
+import { useAuthStore } from "@/store/auth"
 
 export class ApiError extends Error {
   status: number
@@ -23,12 +29,24 @@ async function request<T>(
   init?: RequestInit,
   asText = false,
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "content-type": "application/json", ...init?.headers },
+  const token = useAuthStore.getState().token
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { "x-session-token": token } : {}),
+      ...init?.headers,
+    },
     ...init,
   })
 
   if (!res.ok) {
+    // Auto-logout: if the server rejects our token, clear it so the UI gates
+    // back to the login form rather than showing the authenticated shell.
+    if (res.status === 401 && useAuthStore.getState().token) {
+      useAuthStore.getState().clear()
+    }
+
     // FastAPI/Pydantic errors come back as JSON `{ detail: ... }`.
     let message = `${res.status} ${res.statusText}`
     try {
@@ -48,6 +66,30 @@ async function request<T>(
   return (asText ? res.text() : res.json()) as Promise<T>
 }
 
+// --- /auth -----------------------------------------------------------------
+
+export interface ConnectRequest {
+  host: string
+  user: string
+  password: string
+  port?: number
+}
+
+export interface ConnectResponse {
+  token: string
+  host: string
+  api_version: string
+}
+
+export const connect = (req: ConnectRequest) =>
+  request<ConnectResponse>(URLS.auth.connect, {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+
+export const disconnect = () =>
+  request<{ status: string }>(URLS.auth.disconnect, { method: "POST" })
+
 // --- /health ---------------------------------------------------------------
 
 export interface Health {
@@ -59,7 +101,7 @@ export interface Health {
   }
 }
 
-export const getHealth = () => request<Health>("/health")
+export const getHealth = () => request<Health>(URLS.health)
 
 // --- /generate/hostname ----------------------------------------------------
 
@@ -72,7 +114,7 @@ export interface HostnameRequest {
 
 export const generateHostname = (req: HostnameRequest) =>
   request<string>(
-    "/generate/hostname",
+    URLS.generate.hostname,
     { method: "POST", body: JSON.stringify(req) },
     true,
   )
@@ -92,7 +134,7 @@ export interface NetworkRequest {
 
 export const generateNetwork = (req: NetworkRequest) =>
   request<string>(
-    "/generate/network",
+    URLS.generate.network,
     { method: "POST", body: JSON.stringify(req) },
     true,
   )

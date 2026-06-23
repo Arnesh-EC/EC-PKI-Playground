@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query"
 import { getHealth } from "@/lib/api"
+import { QUERY_KEYS } from "@/constants"
 import { Badge } from "@/components/ui/badge"
 
 /** Live backend reachability indicator, polled via TanStack Query. */
 export function HealthBadge() {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["health"],
+    queryKey: QUERY_KEYS.health,
     queryFn: getHealth,
     refetchInterval: 15_000,
   })
