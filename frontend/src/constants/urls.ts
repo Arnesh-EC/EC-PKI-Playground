@@ -17,6 +17,8 @@ export const URLS = {
   auth: {
     connect: "/auth/connect",
     disconnect: "/auth/disconnect",
+    mode: "/auth/mode",
+    guest: "/auth/guest",
   },
   vm: {
     list: "/vm",

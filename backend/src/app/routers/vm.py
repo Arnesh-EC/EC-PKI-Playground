@@ -4,6 +4,11 @@ Every endpoint requires an authenticated ESXi session; the ``X-Session-Token``
 header is resolved to a live ``Connection`` by the ``get_session`` dependency
 (defined in ``app.core.sessions``).
 
+Every endpoint also requires a role capability checked by ``require_capability``
+(defined in ``app.core.authz``). The allowlist is deployment-level (set by
+AUTH_MODE) so operator deploys are unaffected; guest deploys are restricted to
+the read/guided subset.
+
 Note on ``iso_path``: clone/update accept a server-local ``.iso`` filesystem
 path. The file must already exist on the host running this API. Building or
 uploading ISOs from a client is an isokit concern and is not in scope here.
@@ -18,6 +23,7 @@ from vmkit.errors import VmNotFoundError
 from vmkit.esxi import get_vm_by_name, list_vm_names, power_off_vm, power_on_vm
 from vmkit.workflows import get_vm_config, validate_disk_usage
 
+from app.core.authz import Capability, require_capability
 from app.core.sessions import get_session
 
 router = APIRouter(prefix="/vm", tags=["vm"])
@@ -59,28 +65,40 @@ class DiskCheckRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 # Endpoints (static routes before /{name} to avoid path collisions)           #
 # --------------------------------------------------------------------------- #
-@router.post("/clone")
+@router.post(
+    "/clone",
+    dependencies=[Depends(require_capability(Capability.VM_CLONE))],
+)
 def clone(req: CloneRequest, conn: Connection = Depends(get_session)) -> dict:
     """Clone a base VM: server-side disk copy, render+upload VMX, register."""
     result = clone_workflow(conn, **req.model_dump())
     return asdict(result)
 
 
-@router.post("/disk-check")
+@router.post(
+    "/disk-check",
+    dependencies=[Depends(require_capability(Capability.VM_READ))],
+)
 def disk_check(req: DiskCheckRequest, conn: Connection = Depends(get_session)) -> dict:
     """Report datastore space usage; 409 if cloning the base would exceed the limit."""
     usage = validate_disk_usage(conn.content, req.datastore, req.base, req.max_usage_pct)
     return asdict(usage)
 
 
-@router.get("")
+@router.get(
+    "",
+    dependencies=[Depends(require_capability(Capability.VM_LIST))],
+)
 def list_vms(conn: Connection = Depends(get_session)) -> dict:
     """List all VM names in inventory."""
     names = sorted(list_vm_names(conn.content))
     return {"vms": names, "count": len(names)}
 
 
-@router.get("/{name}")
+@router.get(
+    "/{name}",
+    dependencies=[Depends(require_capability(Capability.VM_READ))],
+)
 def get_vm(name: str, conn: Connection = Depends(get_session)) -> dict:
     """Return the current CPU/RAM/MAC and power state of a registered VM."""
     vm = get_vm_by_name(conn.content, name)
@@ -90,7 +108,10 @@ def get_vm(name: str, conn: Connection = Depends(get_session)) -> dict:
     return {"name": name, "power_state": str(vm.runtime.powerState), **config}
 
 
-@router.patch("/{name}")
+@router.patch(
+    "/{name}",
+    dependencies=[Depends(require_capability(Capability.VM_UPDATE))],
+)
 def update_vm(
     name: str, req: UpdateRequest, conn: Connection = Depends(get_session)
 ) -> dict:
@@ -99,14 +120,20 @@ def update_vm(
     return asdict(result)
 
 
-@router.post("/{name}/power-on")
+@router.post(
+    "/{name}/power-on",
+    dependencies=[Depends(require_capability(Capability.VM_POWER))],
+)
 def power_on(name: str, conn: Connection = Depends(get_session)) -> dict:
     """Power on the named VM."""
     power_on_vm(conn.content, name)
     return {"status": "powered_on", "name": name}
 
 
-@router.post("/{name}/power-off")
+@router.post(
+    "/{name}/power-off",
+    dependencies=[Depends(require_capability(Capability.VM_POWER))],
+)
 def power_off(name: str, conn: Connection = Depends(get_session)) -> dict:
     """Power off (hard) the named VM."""
     power_off_vm(conn.content, name)

@@ -11,7 +11,7 @@
  * UI returns to the login form (handles backend restart / expired sessions).
  */
 
-import { API_BASE, URLS } from "@/constants"
+import { API_BASE, URLS, type AuthMode, type Capability } from "@/constants"
 import { useAuthStore } from "@/store/auth"
 
 export class ApiError extends Error {
@@ -89,6 +89,17 @@ export const connect = (req: ConnectRequest) =>
 
 export const disconnect = () =>
   request<{ status: string }>(URLS.auth.disconnect, { method: "POST" })
+
+export interface AuthMeta {
+  mode: AuthMode
+  role: string
+  capabilities: Capability[]
+}
+
+export const getMode = () => request<AuthMeta>(URLS.auth.mode)
+
+export const guestConnect = () =>
+  request<ConnectResponse>(URLS.auth.guest, { method: "POST" })
 
 // --- /health ---------------------------------------------------------------
 

@@ -7,9 +7,11 @@ ValidationError maps to HTTP 422.
 
 import configgen
 from configgen import NetworkConfig, ValidationError
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
+
+from app.core.authz import Capability, require_capability
 
 router = APIRouter(prefix="/generate", tags=["config-scripts"])
 
@@ -30,7 +32,11 @@ class NetworkRequest(BaseModel):
     dns_suffix: str | None = None
 
 
-@router.post("/hostname", response_class=PlainTextResponse)
+@router.post(
+    "/hostname",
+    response_class=PlainTextResponse,
+    dependencies=[Depends(require_capability(Capability.CONFIG_GENERATE))],
+)
 def generate_hostname(req: HostnameRequest) -> str:
     try:
         return configgen.render_hostname(req.platform, req.hostname)
@@ -38,7 +44,11 @@ def generate_hostname(req: HostnameRequest) -> str:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@router.post("/network", response_class=PlainTextResponse)
+@router.post(
+    "/network",
+    response_class=PlainTextResponse,
+    dependencies=[Depends(require_capability(Capability.CONFIG_GENERATE))],
+)
 def generate_network(req: NetworkRequest) -> str:
     try:
         cfg = NetworkConfig(

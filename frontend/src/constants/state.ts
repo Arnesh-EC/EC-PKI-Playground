@@ -12,4 +12,5 @@ export const STORAGE_KEYS = {
 
 export const QUERY_KEYS = {
   health: ["health"] as const,
+  mode: ["auth-mode"] as const,
 } as const
