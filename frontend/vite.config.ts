@@ -16,11 +16,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      // Frontend calls /api/*; strip the prefix and forward to FastAPI.
+      // Frontend calls /api/*; backend now serves under /api so no rewrite needed.
       "/api": {
         target: API_TARGET,
         changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api/, ""),
       },
     },
   },

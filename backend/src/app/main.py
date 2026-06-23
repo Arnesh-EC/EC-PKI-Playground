@@ -1,34 +1,25 @@
-"""FastAPI application entry point.
+"""FastAPI application factory.
 
-Imports all three libraries at startup (proving they're consumable as git deps)
-and mounts the config-script generation routes. clone/update (vmkit) and ISO
-packing (isokit) endpoints are TODO — they need ESXi credentials / file uploads.
+Creates the app, registers vmkit error handlers, and mounts the /api router.
+The module-level ``app`` binding is what uvicorn targets via "app.main:app"
+(see ``cli.py``).
 """
 
-import configgen
-import isokit  # noqa: F401  (declared dep; used by future /iso route)
-import vmkit  # noqa: F401  (declared dep; used by future /vm/* routes)
 from fastapi import FastAPI
 
-from app.routers import config
-
-app = FastAPI(
-    title="vm-deploy-api",
-    version="0.1.0",
-    description="HTTP API over vmkit / configgen / isokit for VM deployment.",
-)
-
-app.include_router(config.router)
+from app.core.errors import register_exception_handlers
+from app.routers import api_router
 
 
-@app.get("/health", tags=["meta"])
-def health() -> dict:
-    """Liveness check; also reports the libraries reachable from the API process."""
-    return {
-        "status": "ok",
-        "libraries": {
-            "configgen": list(configgen.PLATFORMS),
-            "vmkit": "available",
-            "isokit": "available",
-        },
-    }
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="vm-deploy-api",
+        version="0.1.0",
+        description="HTTP API over vmkit / configgen / isokit for VM deployment.",
+    )
+    register_exception_handlers(app)
+    app.include_router(api_router)
+    return app
+
+
+app = create_app()
