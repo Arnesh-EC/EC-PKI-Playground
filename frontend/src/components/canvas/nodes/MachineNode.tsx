@@ -65,7 +65,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         data.status === NODE_STATUS.configuring && "border-muted",
         data.status === NODE_STATUS.configured && "border-border",
         // Overlap warning takes precedence over selection/status styling.
-        isOverlapping && "border-red-500 bg-red-500/10 ring-2 ring-red-500/40",
+        isOverlapping && "border-red-500 bg-red-500/40 opacity-70 ring-2 ring-red-500/40",
       )}
     >
       {data.typeId === "certificateAuthority" && (

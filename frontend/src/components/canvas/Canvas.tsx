@@ -152,7 +152,7 @@ export function Canvas() {
       }
 
       const others = nodes.filter((n) => n.id !== node.id && !memberIds.includes(n.id))
-      setOverlapNode(findOverlappingId(node, others))
+      setOverlapNode(findOverlappingId(node, others) ? node.id : null)
     },
     [nodes, applyNodeChanges, setOverlapNode],
   )
