@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils"
 import { TEMPLATE_BY_ID } from "@/constants/templates"
 import { EDGE_TYPE, NODE_STATUS } from "@/constants/topology"
 import { caTier, caDepth, domainMembership } from "@/lib/topology"
+import { useTopologyStore } from "@/store/topology"
 import type { MachineData } from "@/store/topology"
 import { Badge } from "@/components/ui/badge"
 import { ProgressBar } from "./ProgressBar"
@@ -37,6 +38,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
   const def = TEMPLATE_BY_ID[data.typeId]
   const nodes = useNodes<Node<MachineData>>()
   const edges = useEdges()
+  const isOverlapping = useTopologyStore((s) => s.overlapNodeId === id)
 
   // Derived chips (only for configured nodes)
   const showDerived = data.status === NODE_STATUS.configured
@@ -62,9 +64,11 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         data.status === NODE_STATUS.unconfigured && "border-amber-500/40",
         data.status === NODE_STATUS.configuring && "border-muted",
         data.status === NODE_STATUS.configured && "border-border",
+        // Overlap warning takes precedence over selection/status styling.
+        isOverlapping && "border-red-500 bg-red-500/10 ring-2 ring-red-500/40",
       )}
     >
-      {data.typeId !== "domainController" && (
+      {data.typeId === "certificateAuthority" && (
         <>
           <Handle
             type="target"

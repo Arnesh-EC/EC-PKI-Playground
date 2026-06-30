@@ -122,11 +122,82 @@ export function domainMembership(
 
 export const DOMAIN_RADIUS = 260
 
+/** Extra clearance kept between a domain's farthest member and its circle edge. */
+const DOMAIN_MEMBER_PADDING = 90
+
+/**
+ * How close another node must be to a drifting member for that member to
+ * still count as "huddled with the pack" rather than being carried out on
+ * its own — keeps the circle from snapping back mid-shuffle when a cluster
+ * of members moves together.
+ */
+const DOMAIN_EXIT_NEIGHBOR_CLEARANCE = 100
+
+/**
+ * Extra distance, past the radius the domain would have without a given
+ * member, that member must clear before it's treated as leaving — gives the
+ * boundary some hysteresis so the circle doesn't flicker right at the edge.
+ */
+const DOMAIN_EXIT_MARGIN = 40
+
 /** Centre of a node in flow coordinates (position is the top-left corner). */
 export function nodeCenter(node: Node<MachineData>): { x: number; y: number } {
   const w = node.measured?.width ?? 160
   const h = node.measured?.height ?? 80
   return { x: node.position.x + w / 2, y: node.position.y + h / 2 }
+}
+
+/**
+ * A domain controller's circle grows to keep its committed members inside
+ * with padding, rather than staying a fixed size. Never shrinks below
+ * `DOMAIN_RADIUS` so an empty/sparse domain still reads as a region.
+ *
+ * A member that has drifted well past where the circle would sit without it,
+ * and isn't huddled near any other node, is being carried out (e.g. dragged
+ * toward the boundary) — its distance is excluded from the growth
+ * calculation so the circle snaps back instead of inflating to chase it
+ * forever.
+ */
+export function domainRadius(
+  dc: Node<MachineData>,
+  nodes: Node<MachineData>[],
+  edges: Edge[],
+): number {
+  const dcCenter = nodeCenter(dc)
+  const members = edges
+    .filter((e) => e.target === dc.id && e.data?.edgeType === EDGE_TYPE.domainJoin)
+    .map((e) => nodes.find((n) => n.id === e.source))
+    .filter((n): n is Node<MachineData> => !!n)
+
+  const distances = members.map((m) => {
+    const c = nodeCenter(m)
+    return Math.hypot(c.x - dcCenter.x, c.y - dcCenter.y)
+  })
+
+  let maxDist = 0
+  members.forEach((member, i) => {
+    const dist = distances[i]
+
+    const othersMaxDist = distances.reduce(
+      (m, d, j) => (j === i ? m : Math.max(m, d)),
+      0,
+    )
+    const radiusWithoutMember = Math.max(DOMAIN_RADIUS, othersMaxDist + DOMAIN_MEMBER_PADDING)
+
+    const c = nodeCenter(member)
+    const hasNearbyNeighbor = nodes.some((other) => {
+      if (other.id === member.id || other.id === dc.id) return false
+      const oc = nodeCenter(other)
+      return Math.hypot(oc.x - c.x, oc.y - c.y) < DOMAIN_EXIT_NEIGHBOR_CLEARANCE
+    })
+
+    const isLeaving = dist > radiusWithoutMember + DOMAIN_EXIT_MARGIN && !hasNearbyNeighbor
+    if (isLeaving) return
+
+    if (dist > maxDist) maxDist = dist
+  })
+
+  return Math.max(DOMAIN_RADIUS, maxDist + DOMAIN_MEMBER_PADDING)
 }
 
 /** Human label for a domain — the DC's configured domain name, else its node name. */
@@ -157,6 +228,7 @@ export function isDomainEligible(node: Node<MachineData>, edges: Edge[]): boolea
 export function findDomainForNode(
   node: Node<MachineData>,
   nodes: Node<MachineData>[],
+  edges: Edge[],
 ): Node<MachineData> | null {
   const c = nodeCenter(node)
   let best: Node<MachineData> | null = null
@@ -167,7 +239,7 @@ export function findDomainForNode(
     if (dc.data.status !== NODE_STATUS.configured) continue
     const dcc = nodeCenter(dc)
     const dist = Math.hypot(c.x - dcc.x, c.y - dcc.y)
-    if (dist <= DOMAIN_RADIUS && dist < bestDist) {
+    if (dist <= domainRadius(dc, nodes, edges) && dist < bestDist) {
       best = dc
       bestDist = dist
     }
@@ -190,6 +262,95 @@ export function domainJoinEdge(source: string, target: string): Edge {
     hidden: true,
     data: { edgeType: EDGE_TYPE.domainJoin },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Node overlap prevention
+// ---------------------------------------------------------------------------
+//
+// Nodes shouldn't be droppable on top of one another. `findOverlappingId` is
+// used live during a drag (to flag the offending node), `nearestFreePosition`
+// on drop (to relocate it).
+
+const OVERLAP_GAP = 12
+
+export interface Rect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** Bounding rect of a node in flow coordinates (position is the top-left corner). */
+export function nodeRect(node: Node<MachineData>): Rect {
+  const w = node.measured?.width ?? 160
+  const h = node.measured?.height ?? 80
+  return { x: node.position.x, y: node.position.y, w, h }
+}
+
+/** Axis-aligned bounding-box intersection, with an optional clearance gap. */
+export function rectsOverlap(a: Rect, b: Rect, gap = 0): boolean {
+  return (
+    a.x < b.x + b.w + gap &&
+    a.x + a.w + gap > b.x &&
+    a.y < b.y + b.h + gap &&
+    a.y + a.h + gap > b.y
+  )
+}
+
+/** The id of the first node in `others` whose rect intersects `node`'s, if any. */
+export function findOverlappingId(
+  node: Node<MachineData>,
+  others: Node<MachineData>[],
+  gap = OVERLAP_GAP,
+): string | null {
+  const rect = nodeRect(node)
+  for (const other of others) {
+    if (other.id === node.id) continue
+    if (rectsOverlap(rect, nodeRect(other), gap)) return other.id
+  }
+  return null
+}
+
+/**
+ * Nearest position to `desired` (anchored there) where `node`'s rect clears
+ * every rect in `others`. Searches outward in rings of increasing radius,
+ * sampling a fixed number of angles per ring, so it's deterministic and
+ * always terminates even on a densely packed canvas.
+ */
+export function nearestFreePosition(
+  node: Node<MachineData>,
+  others: Node<MachineData>[],
+  desired: { x: number; y: number },
+  gap = OVERLAP_GAP,
+): { x: number; y: number } {
+  const w = node.measured?.width ?? 160
+  const h = node.measured?.height ?? 80
+  const otherRects = others.filter((o) => o.id !== node.id).map(nodeRect)
+
+  const fits = (pos: { x: number; y: number }) => {
+    const rect: Rect = { x: pos.x, y: pos.y, w, h }
+    return otherRects.every((o) => !rectsOverlap(rect, o, gap))
+  }
+
+  if (fits(desired)) return desired
+
+  const STEP = 24
+  const ANGLE_STEPS = 16
+  const MAX_RADIUS = STEP * 40 // bounded search — always terminates
+
+  for (let radius = STEP; radius <= MAX_RADIUS; radius += STEP) {
+    for (let i = 0; i < ANGLE_STEPS; i++) {
+      const angle = (i / ANGLE_STEPS) * Math.PI * 2
+      const candidate = {
+        x: desired.x + Math.cos(angle) * radius,
+        y: desired.y + Math.sin(angle) * radius,
+      }
+      if (fits(candidate)) return candidate
+    }
+  }
+
+  return desired // shouldn't realistically be reached
 }
 
 // ---------------------------------------------------------------------------

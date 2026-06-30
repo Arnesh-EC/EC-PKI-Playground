@@ -1,7 +1,7 @@
 import { ViewportPortal } from "@xyflow/react"
 
 import { NODE_STATUS } from "@/constants/topology"
-import { DOMAIN_RADIUS, domainLabel, nodeCenter } from "@/lib/topology"
+import { domainLabel, domainRadius, nodeCenter } from "@/lib/topology"
 import { useTopologyStore } from "@/store/topology"
 
 /**
@@ -15,6 +15,7 @@ import { useTopologyStore } from "@/store/topology"
  */
 export function DomainRegions() {
   const nodes = useTopologyStore((s) => s.nodes)
+  const edges = useTopologyStore((s) => s.edges)
   const domains = nodes.filter(
     (n) =>
       n.data.typeId === "domainController" &&
@@ -36,6 +37,7 @@ export function DomainRegions() {
       >
         {domains.map((dc) => {
           const c = nodeCenter(dc)
+          const r = domainRadius(dc, nodes, edges)
           return (
             <div
               key={dc.id}
@@ -43,13 +45,14 @@ export function DomainRegions() {
                 position: "absolute",
                 left: c.x,
                 top: c.y,
-                width: DOMAIN_RADIUS * 2,
-                height: DOMAIN_RADIUS * 2,
+                width: r * 2,
+                height: r * 2,
                 transform: "translate(-50%, -50%)",
                 borderRadius: "9999px",
                 border: "2px solid rgba(56, 189, 248, 0.45)",
                 background: "rgba(56, 189, 248, 0.08)",
                 boxShadow: "inset 0 0 80px rgba(56, 189, 248, 0.12)",
+                transition: "width 600ms cubic-bezier(0.34, 1.56, 0.64, 1), height 600ms cubic-bezier(0.34, 1.56, 0.64, 1)",
               }}
             >
               <span

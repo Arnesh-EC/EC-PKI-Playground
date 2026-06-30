@@ -62,6 +62,7 @@ interface ProjectsState {
   markActiveDirty: () => void
   saveActiveSnapshot: () => void
   persistActiveDraft: () => void
+  persistActiveViewport: () => void
 }
 
 export const useProjectsStore = create<ProjectsState>()(
@@ -169,6 +170,19 @@ export const useProjectsStore = create<ProjectsState>()(
         set((s) => ({
           projects: s.projects.map((p) =>
             p.id === activeProjectId ? { ...p, nodes, edges, counters, viewport } : p,
+          ),
+        }))
+      },
+
+      // Camera-only checkpoint: a bare pan/zoom shouldn't mark the project
+      // dirty (no graph data changed) but should still survive a reload.
+      persistActiveViewport() {
+        const { activeProjectId } = get()
+        if (!activeProjectId) return
+        const { viewport } = useTopologyStore.getState()
+        set((s) => ({
+          projects: s.projects.map((p) =>
+            p.id === activeProjectId ? { ...p, viewport } : p,
           ),
         }))
       },

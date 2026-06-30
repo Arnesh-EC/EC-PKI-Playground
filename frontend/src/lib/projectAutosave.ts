@@ -43,6 +43,13 @@ export function initProjectAutosave() {
 
   useTopologyStore.subscribe((state, prev) => {
     if (suppressed) return
+
+    // A bare pan/zoom isn't a graph edit — checkpoint the camera position
+    // straight to localStorage without touching the dirty flag.
+    if (state.viewport !== prev.viewport) {
+      useProjectsStore.getState().persistActiveViewport()
+    }
+
     if (state.nodes === prev.nodes && state.edges === prev.edges && state.counters === prev.counters) {
       return
     }

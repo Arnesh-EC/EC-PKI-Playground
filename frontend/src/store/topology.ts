@@ -90,6 +90,12 @@ interface TopologyState {
   counters: Record<string, number>
   /** Camera pan/zoom; not part of the graph data but persisted per project. */
   viewport: Viewport
+  /**
+   * Id of the node currently overlapping another mid-drag (drives the red
+   * translucent warning state). Deliberately not part of `nodes`/`edges`/
+   * `counters` so updating it doesn't trip the autosave/dirty subscription.
+   */
+  overlapNodeId: string | null
 
   addNode: (typeId: string, position: { x: number; y: number }) => void
   applyNodeChanges: (changes: NodeChange<Node<MachineData>>[]) => void
@@ -103,6 +109,7 @@ interface TopologyState {
   removeEdge: (id: string) => void
   selectNode: (id: string | null) => void
   setViewport: (viewport: Viewport) => void
+  setOverlapNode: (id: string | null) => void
   /** Replaces the working graph wholesale — used when switching/creating projects. */
   loadSnapshot: (
     nodes: Node<MachineData>[],
@@ -118,6 +125,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
   selectedNodeId: null,
   counters: {},
   viewport: DEFAULT_VIEWPORT,
+  overlapNodeId: null,
 
   addNode(typeId, position) {
     const counters = { ...get().counters }
@@ -198,7 +206,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
     for (const node of candidates) {
       if (!isDomainEligible(node, edges)) continue
 
-      const dc = findDomainForNode(node, nodes)
+      const dc = findDomainForNode(node, nodes, edges)
       const targetDcId = dc?.id ?? null
       const currentEdge = edges.find(
         (e) =>
@@ -320,6 +328,11 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
 
   setViewport(viewport) {
     set({ viewport })
+  },
+
+  setOverlapNode(id) {
+    if (get().overlapNodeId === id) return
+    set({ overlapNodeId: id })
   },
 
   loadSnapshot(nodes, edges, counters, viewport) {

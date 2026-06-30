@@ -10,6 +10,7 @@ import {
   type OnConnect,
   type OnSelectionChangeParams,
   type OnMoveEnd,
+  type OnNodeDrag,
   useReactFlow,
 } from "@xyflow/react"
 import { toast } from "sonner"
@@ -22,11 +23,24 @@ import {
   type MachineData,
   type DomainSyncChange,
 } from "@/store/topology"
+import { EDGE_TYPE } from "@/constants/topology"
+import { findOverlappingId, nearestFreePosition } from "@/lib/topology"
 import { useResolvedTheme } from "@/hooks/useTheme"
 
 const DRAG_TYPE = "application/reactflow"
 
 const nodeTypes = { machine: MachineNode }
+
+/**
+ * Snapshot of a drag in progress. When the dragged node is a domain
+ * controller, `members` carries its *committed* members (a `domainJoin` edge
+ * targeting it) so they can be dragged along rigidly and reverted together.
+ */
+interface DragSnapshot {
+  id: string
+  position: { x: number; y: number }
+  members: { id: string; position: { x: number; y: number } }[]
+}
 
 export function Canvas() {
   const nodes = useTopologyStore((s) => s.nodes)
@@ -42,6 +56,7 @@ export function Canvas() {
   const selectNode = useTopologyStore((s) => s.selectNode)
   const addNode = useTopologyStore((s) => s.addNode)
   const setViewport = useTopologyStore((s) => s.setViewport)
+  const setOverlapNode = useTopologyStore((s) => s.setOverlapNode)
   const { screenToFlowPosition, setViewport: rfSetViewport } = useReactFlow()
   const wrapperRef = useRef<HTMLDivElement>(null)
   const resolvedTheme = useResolvedTheme()
@@ -65,9 +80,10 @@ export function Canvas() {
   )
 
   // Pending domain join/leave awaiting confirmation. We remember where the
-  // dragged node started so a declined change can snap it back — keeping the
-  // circle (geometry) and membership in agreement.
-  const dragStart = useRef<{ id: string; position: { x: number; y: number } } | null>(null)
+  // dragged node (and, if it's a domain controller, its committed members)
+  // started so a declined change can snap the whole cluster back — keeping
+  // the circle (geometry) and membership in agreement.
+  const dragStart = useRef<DragSnapshot | null>(null)
   const [pendingChanges, setPendingChanges] = useState<DomainSyncChange[] | null>(null)
 
   const onNodesChange = useCallback(
@@ -97,15 +113,82 @@ export function Canvas() {
 
   const onNodeDragStart = useCallback(
     (_: MouseEvent | TouchEvent, node: Node<MachineData>) => {
-      dragStart.current = { id: node.id, position: { ...node.position } }
+      // Dragging a domain controller carries its committed members along
+      // rigidly — snapshot their starting positions too.
+      const members =
+        node.data.typeId === "domainController"
+          ? edges
+              .filter((e) => e.target === node.id && e.data?.edgeType === EDGE_TYPE.domainJoin)
+              .map((e) => nodes.find((n) => n.id === e.source))
+              .filter((n): n is Node<MachineData> => !!n)
+              .map((n) => ({ id: n.id, position: { ...n.position } }))
+          : []
+      dragStart.current = { id: node.id, position: { ...node.position }, members }
+      setOverlapNode(null)
     },
-    [],
+    [nodes, edges, setOverlapNode],
   )
 
-  // When a node is dropped, see whether the move changes domain membership. If
-  // so, defer it to a confirmation prompt rather than applying immediately.
+  // Live drag tick: carry a domain controller's members along with it
+  // (preserving their offsets), and flag the dragged node red if it's
+  // currently overlapping another node.
+  const onNodeDrag: OnNodeDrag<Node<MachineData>> = useCallback(
+    (_, node) => {
+      const start = dragStart.current
+      const memberIds = start?.members.map((m) => m.id) ?? []
+
+      if (start && start.id === node.id && start.members.length > 0) {
+        const delta = {
+          x: node.position.x - start.position.x,
+          y: node.position.y - start.position.y,
+        }
+        applyNodeChanges(
+          start.members.map((m) => ({
+            id: m.id,
+            type: "position" as const,
+            position: { x: m.position.x + delta.x, y: m.position.y + delta.y },
+          })),
+        )
+      }
+
+      const others = nodes.filter((n) => n.id !== node.id && !memberIds.includes(n.id))
+      setOverlapNode(findOverlappingId(node, others))
+    },
+    [nodes, applyNodeChanges, setOverlapNode],
+  )
+
+  // When a node is dropped: if it lands on top of another, relocate it (and
+  // its cluster, if any) to the nearest clear spot. Then see whether the move
+  // changes domain membership — if so, defer to a confirmation prompt rather
+  // than applying immediately.
   const onNodeDragStop = useCallback(
     (_: MouseEvent | TouchEvent, node: Node<MachineData>) => {
+      const start = dragStart.current
+      const memberIds = start?.members.map((m) => m.id) ?? []
+      const others = nodes.filter((n) => n.id !== node.id && !memberIds.includes(n.id))
+
+      if (findOverlappingId(node, others)) {
+        const freePosition = nearestFreePosition(node, others, node.position)
+        const delta = {
+          x: freePosition.x - node.position.x,
+          y: freePosition.y - node.position.y,
+        }
+        const corrections: NodeChange<Node<MachineData>>[] = [
+          { id: node.id, type: "position", position: freePosition },
+        ]
+        for (const id of memberIds) {
+          const member = nodes.find((n) => n.id === id)
+          if (!member) continue
+          corrections.push({
+            id,
+            type: "position",
+            position: { x: member.position.x + delta.x, y: member.position.y + delta.y },
+          })
+        }
+        applyNodeChanges(corrections)
+      }
+      setOverlapNode(null)
+
       const changes = computeDomainChanges(node.id)
       if (changes.length === 0) {
         dragStart.current = null
@@ -113,7 +196,7 @@ export function Canvas() {
       }
       setPendingChanges(changes)
     },
-    [computeDomainChanges],
+    [nodes, applyNodeChanges, computeDomainChanges, setOverlapNode],
   )
 
   const confirmDomainChanges = useCallback(() => {
@@ -128,11 +211,17 @@ export function Canvas() {
   }, [pendingChanges, applyDomainChanges])
 
   const cancelDomainChanges = useCallback(() => {
-    // Snap the dragged node back so it no longer sits in a region it didn't join.
+    // Snap the dragged node (and any members carried along with it) back so
+    // nothing sits in a region it didn't join.
     const start = dragStart.current
     if (start) {
       applyNodeChanges([
         { id: start.id, type: "position", position: start.position },
+        ...start.members.map((m) => ({
+          id: m.id,
+          type: "position" as const,
+          position: m.position,
+        })),
       ])
     }
     dragStart.current = null
@@ -170,6 +259,7 @@ export function Canvas() {
         onConnect={onConnect}
         onSelectionChange={onSelectionChange}
         onNodeDragStart={onNodeDragStart}
+        onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
         onDragOver={onDragOver}
         onDrop={onDrop}

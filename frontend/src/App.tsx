@@ -9,6 +9,7 @@ import { HealthBadge } from "@/components/HealthBadge"
 import { LoginForm } from "@/components/LoginForm"
 import { LogoutButton } from "@/components/LogoutButton"
 import { Splash } from "@/components/Splash"
+import { SettingsDialog } from "@/components/SettingsDialog"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { Workspace } from "@/components/canvas/Workspace"
 import { useApplyTheme } from "@/hooks/useTheme"
@@ -91,6 +92,7 @@ function App() {
           ) : (
             <LogoutButton />
           )}
+          <SettingsDialog />
           <ThemeToggle />
         </div>
       </header>
