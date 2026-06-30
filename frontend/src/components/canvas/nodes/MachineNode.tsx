@@ -64,16 +64,20 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         data.status === NODE_STATUS.configured && "border-border",
       )}
     >
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!h-3 !w-3 !bg-muted-foreground/50 !border-border"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!h-3 !w-3 !bg-muted-foreground/50 !border-border"
-      />
+      {data.typeId !== "domainController" && (
+        <>
+          <Handle
+            type="target"
+            position={Position.Left}
+            className="!h-3 !w-3 !bg-muted-foreground/50 !border-border"
+          />
+          <Handle
+            type="source"
+            position={Position.Right}
+            className="!h-3 !w-3 !bg-muted-foreground/50 !border-border"
+          />
+        </>
+      )}
 
       {/* Header */}
       <div

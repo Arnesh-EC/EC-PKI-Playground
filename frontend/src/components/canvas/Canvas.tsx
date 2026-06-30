@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   ReactFlow,
   Background,
@@ -9,6 +9,7 @@ import {
   type Connection,
   type OnConnect,
   type OnSelectionChangeParams,
+  type OnMoveEnd,
   useReactFlow,
 } from "@xyflow/react"
 import { toast } from "sonner"
@@ -40,9 +41,28 @@ export function Canvas() {
   const applyDomainChanges = useTopologyStore((s) => s.applyDomainChanges)
   const selectNode = useTopologyStore((s) => s.selectNode)
   const addNode = useTopologyStore((s) => s.addNode)
-  const { screenToFlowPosition } = useReactFlow()
+  const setViewport = useTopologyStore((s) => s.setViewport)
+  const { screenToFlowPosition, setViewport: rfSetViewport } = useReactFlow()
   const wrapperRef = useRef<HTMLDivElement>(null)
   const resolvedTheme = useResolvedTheme()
+  const [initialViewport] = useState(() => useTopologyStore.getState().viewport)
+
+  // The canvas's own pan/zoom is uncontrolled (smooth, no per-frame store
+  // writes); we only need to (a) imperatively snap the camera when a project
+  // switch loads a different viewport into the store, and (b) capture the
+  // final position back into the store once the user stops panning/zooming.
+  useEffect(() => {
+    return useTopologyStore.subscribe((state, prev) => {
+      if (state.viewport !== prev.viewport) {
+        rfSetViewport(state.viewport, { duration: 0 })
+      }
+    })
+  }, [rfSetViewport])
+
+  const onMoveEnd: OnMoveEnd = useCallback(
+    (_, viewport) => setViewport(viewport),
+    [setViewport],
+  )
 
   // Pending domain join/leave awaiting confirmation. We remember where the
   // dragged node started so a declined change can snap it back — keeping the
@@ -153,6 +173,8 @@ export function Canvas() {
         onNodeDragStop={onNodeDragStop}
         onDragOver={onDragOver}
         onDrop={onDrop}
+        onMoveEnd={onMoveEnd}
+        defaultViewport={initialViewport}
         colorMode={resolvedTheme}
         proOptions={{ hideAttribution: true }}
       >

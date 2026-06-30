@@ -12,11 +12,16 @@ import { Splash } from "@/components/Splash"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { Workspace } from "@/components/canvas/Workspace"
 import { useApplyTheme } from "@/hooks/useTheme"
+import { useBeforeUnloadWarning } from "@/hooks/useBeforeUnloadWarning"
+import { initProjectAutosave } from "@/lib/projectAutosave"
+import { useProjectsStore } from "@/store/projects"
 
 function App() {
   // Apply the resolved theme to <html> on every render. Must be called before
   // any early returns so theme applies to the splash / login screens too.
   useApplyTheme()
+
+  useBeforeUnloadWarning()
 
   const token = useAuthStore((s) => s.token)
   const host = useAuthStore((s) => s.host)
@@ -49,6 +54,16 @@ function App() {
     useAuthStore.getState().clear()
     autoConnect.mutate()
   }, [meta, autoConnect])
+
+  // Once a session exists, load the active project's topology (or bootstrap a
+  // default one) and start the autosave bridge. Runs once per session.
+  const didInitProjects = useRef(false)
+  useEffect(() => {
+    if (!token || didInitProjects.current) return
+    didInitProjects.current = true
+    initProjectAutosave()
+    useProjectsStore.getState().ensureDefaultProject()
+  }, [token])
 
   if (modeLoading) return <Splash />
 

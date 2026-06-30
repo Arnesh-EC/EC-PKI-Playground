@@ -17,6 +17,7 @@ import {
   type EdgeChange,
   type Node,
   type NodeChange,
+  type Viewport,
 } from "@xyflow/react"
 import { create } from "zustand"
 
@@ -80,11 +81,15 @@ export interface DomainSyncChange {
 // Store
 // ---------------------------------------------------------------------------
 
+export const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 }
+
 interface TopologyState {
   nodes: Node<MachineData>[]
   edges: Edge[]
   selectedNodeId: string | null
   counters: Record<string, number>
+  /** Camera pan/zoom; not part of the graph data but persisted per project. */
+  viewport: Viewport
 
   addNode: (typeId: string, position: { x: number; y: number }) => void
   applyNodeChanges: (changes: NodeChange<Node<MachineData>>[]) => void
@@ -97,6 +102,14 @@ interface TopologyState {
   removeNode: (id: string) => void
   removeEdge: (id: string) => void
   selectNode: (id: string | null) => void
+  setViewport: (viewport: Viewport) => void
+  /** Replaces the working graph wholesale — used when switching/creating projects. */
+  loadSnapshot: (
+    nodes: Node<MachineData>[],
+    edges: Edge[],
+    counters: Record<string, number>,
+    viewport: Viewport,
+  ) => void
 }
 
 export const useTopologyStore = create<TopologyState>()((set, get) => ({
@@ -104,6 +117,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
   edges: [],
   selectedNodeId: null,
   counters: {},
+  viewport: DEFAULT_VIEWPORT,
 
   addNode(typeId, position) {
     const counters = { ...get().counters }
@@ -302,5 +316,13 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
   selectNode(id) {
     if (get().selectedNodeId === id) return
     set({ selectedNodeId: id })
+  },
+
+  setViewport(viewport) {
+    set({ viewport })
+  },
+
+  loadSnapshot(nodes, edges, counters, viewport) {
+    set({ nodes, edges, counters, viewport, selectedNodeId: null })
   },
 }))
