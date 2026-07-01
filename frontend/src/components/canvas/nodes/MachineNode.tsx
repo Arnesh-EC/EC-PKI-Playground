@@ -1,34 +1,55 @@
-import { AlertTriangle, Loader2 } from "lucide-react"
+import { AlertTriangle, Clock, Loader2 } from "lucide-react"
 import { Handle, Position, useEdges, useNodes } from "@xyflow/react"
 import type { NodeProps, Node } from "@xyflow/react"
 import { cn } from "@/lib/utils"
 import { TEMPLATE_BY_ID } from "@/constants/templates"
-import { EDGE_TYPE, NODE_STATUS } from "@/constants/topology"
-import { caTier, caDepth, domainMembership, truncateLabel } from "@/lib/topology"
+import { EDGE_TYPE, LIFECYCLE } from "@/constants/topology"
+import type { Lifecycle } from "@/constants/topology"
+import { caTier, caDepth, domainMembership, isConnectable, truncateLabel } from "@/lib/topology"
 import { useTopologyStore } from "@/store/topology"
 import type { MachineData } from "@/store/topology"
 import { Badge } from "@/components/ui/badge"
 import { ProgressBar } from "./ProgressBar"
 
-function StatusBadge({ status }: { status: string }) {
-  if (status === NODE_STATUS.unconfigured)
+function LifecycleBadge({ lifecycle }: { lifecycle: Lifecycle }) {
+  if (lifecycle === LIFECYCLE.draft)
     return (
       <Badge
         variant="secondary"
         className="flex items-center gap-1 text-[10px] text-amber-500 border-amber-500/30"
       >
         <AlertTriangle className="h-2.5 w-2.5" />
-        unconfigured
+        draft
       </Badge>
     )
-  if (status === NODE_STATUS.configuring)
+  if (lifecycle === LIFECYCLE.staged)
+    return (
+      <Badge
+        variant="secondary"
+        className="flex items-center gap-1 text-[10px] text-sky-500 border-sky-500/30"
+      >
+        <Clock className="h-2.5 w-2.5" />
+        staged
+      </Badge>
+    )
+  if (lifecycle === LIFECYCLE.deploying)
     return (
       <Badge
         variant="secondary"
         className="flex items-center gap-1 text-[10px] text-muted-foreground"
       >
         <Loader2 className="h-2.5 w-2.5 animate-spin" />
-        configuring…
+        deploying…
+      </Badge>
+    )
+  if (lifecycle === LIFECYCLE.failed)
+    return (
+      <Badge
+        variant="secondary"
+        className="flex items-center gap-1 text-[10px] text-red-500 border-red-500/30"
+      >
+        <AlertTriangle className="h-2.5 w-2.5" />
+        failed
       </Badge>
     )
   return null
@@ -40,8 +61,8 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
   const edges = useEdges()
   const isOverlapping = useTopologyStore((s) => s.overlapNodeId === id)
 
-  // Derived chips (only for configured nodes)
-  const showDerived = data.status === NODE_STATUS.configured
+  // Derived chips — only meaningful once a node can carry real edges.
+  const showDerived = isConnectable(data)
   const tier = showDerived && data.typeId === "certificateAuthority"
     ? caTier(id, edges)
     : null
@@ -61,21 +82,23 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         "min-w-[160px] rounded-xl border bg-card text-card-foreground shadow-sm select-none",
         "transition-shadow",
         selected && "ring-2 ring-primary shadow-md",
-        data.status === NODE_STATUS.unconfigured && "border-amber-500/40",
-        data.status === NODE_STATUS.configuring && "border-muted",
-        data.status === NODE_STATUS.configured && "border-border",
+        data.lifecycle === LIFECYCLE.draft && "border-amber-500/40",
+        data.lifecycle === LIFECYCLE.staged && "border-sky-500/40 border-dashed opacity-80",
+        data.lifecycle === LIFECYCLE.deploying && "border-muted",
+        (data.lifecycle === LIFECYCLE.deployed || data.lifecycle === LIFECYCLE.drifted) && "border-border",
+        data.lifecycle === LIFECYCLE.failed && "border-red-500/50",
         !isOverlapping && memberCount !== null && memberCount > 0 &&
           "border-sky-500/60 shadow-[0_0_18px_4px_rgba(14,165,233,0.35)] " +
           "dark:shadow-[0_0_20px_5px_rgba(56,189,248,0.55)]",
         !isOverlapping && data.typeId === "certificateAuthority" && domain !== null &&
           "border-amber-500/60 shadow-[0_0_18px_4px_rgba(245,158,11,0.35)] " +
           "dark:shadow-[0_0_20px_5px_rgba(251,191,36,0.55)]",
-        // Overlap warning takes precedence over selection/status styling.
+        // Overlap warning takes precedence over selection/lifecycle styling.
         isOverlapping && "border-red-500 bg-red-500/40 opacity-70 ring-2 ring-red-500/40",
       )}
     >
       {data.typeId === "certificateAuthority" &&
-        data.status === NODE_STATUS.configured && (
+        isConnectable(data) && (
         <>
           {data.config?.caType !== "Root" && (
             <Handle
@@ -101,7 +124,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
       )}
 
       {data.typeId === "webServer" &&
-        data.status === NODE_STATUS.configured && (
+        isConnectable(data) && (
         <Handle
           type="target"
           position={Position.Left}
@@ -122,10 +145,10 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
 
       {/* Body */}
       <div className="px-3 py-2 flex flex-col gap-1.5">
-        <StatusBadge status={data.status} />
+        <LifecycleBadge lifecycle={data.lifecycle} />
 
-        {/* Live progress while configuring */}
-        {data.status === NODE_STATUS.configuring && (
+        {/* Live progress while deploying */}
+        {data.lifecycle === LIFECYCLE.deploying && (
           <>
             {data.phase && (
               <span className="text-[10px] text-muted-foreground truncate">

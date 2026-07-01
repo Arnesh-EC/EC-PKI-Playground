@@ -5,8 +5,8 @@
  * — keeps the two stores decoupled from each other. Subscribes to topology
  * changes and decides, per change, whether it's just an in-progress edit
  * (mark the active project dirty, cheap, in-memory) or a checkpoint worth
- * writing to localStorage (a node finished configuring, or domain membership
- * changed). Plain drags/drops of `unconfigured` nodes only mark dirty.
+ * writing to localStorage (a node finished deploying, or domain membership
+ * changed). Plain drags/drops of `draft` nodes only mark dirty.
  */
 
 import { EDGE_TYPE } from "@/constants/topology"
@@ -50,16 +50,23 @@ export function initProjectAutosave() {
       return
     }
 
-    // A node set change (add/remove) or a status/jobId transition is worth a
-    // real checkpoint — it's what lets `unconfigured` nodes and an in-flight
-    // `configuring` + `jobId` survive a reload (see resumeJobs in
+    // A node set change (add/remove) or a lifecycle-relevant field transition
+    // is worth a real checkpoint — it's what lets `draft` nodes and an
+    // in-flight `deploying` + `jobId` survive a reload (see resumeJobs in
     // store/topology.ts). Bare drags/progress ticks stay on the cheap
     // dirty-mark path below so they don't spam localStorage.
     const nodeSetChanged = state.nodes.length !== prev.nodes.length
     const prevById = new Map(prev.nodes.map((n) => [n.id, n.data]))
     const nodeStateChanged = state.nodes.some((n) => {
       const prevData = prevById.get(n.id)
-      return !prevData || prevData.status !== n.data.status || prevData.jobId !== n.data.jobId
+      return (
+        !prevData ||
+        prevData.lifecycle !== n.data.lifecycle ||
+        prevData.jobId !== n.data.jobId ||
+        prevData.poweredOn !== n.data.poweredOn ||
+        prevData.config !== n.data.config ||
+        prevData.lastDeployedConfig !== n.data.lastDeployedConfig
+      )
     })
 
     const domainChanged =

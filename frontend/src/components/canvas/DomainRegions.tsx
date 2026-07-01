@@ -1,13 +1,16 @@
 import { ViewportPortal } from "@xyflow/react"
 
-import { NODE_STATUS } from "@/constants/topology"
-import { domainLabel, domainRadius, nodeCenter } from "@/lib/topology"
+import { LIFECYCLE } from "@/constants/topology"
+import { domainLabel, domainRadius, isConnectable, nodeCenter } from "@/lib/topology"
 import { useTopologyStore } from "@/store/topology"
 
 /**
- * Sky-blue translucent circle drawn around each configured domain controller —
- * the visual "domain". Rendered inside a ViewportPortal so the circles live in
- * flow coordinates (panning/zooming with the canvas) and sit behind the nodes.
+ * Sky-blue translucent circle drawn around each domain controller that can
+ * carry real membership edges — the visual "domain". Rendered inside a
+ * ViewportPortal so the circles live in flow coordinates (panning/zooming
+ * with the canvas) and sit behind the nodes. Staged DCs (not yet deployed)
+ * get a dashed outline so the circle itself communicates that the domain is
+ * still pending a deploy.
  *
  * This is purely presentational; the membership logic that reacts to nodes
  * being dragged into a circle lives in the store's `computeDomainChanges` /
@@ -17,9 +20,7 @@ export function DomainRegions() {
   const nodes = useTopologyStore((s) => s.nodes)
   const edges = useTopologyStore((s) => s.edges)
   const domains = nodes.filter(
-    (n) =>
-      n.data.typeId === "domainController" &&
-      n.data.status === NODE_STATUS.configured,
+    (n) => n.data.typeId === "domainController" && isConnectable(n.data),
   )
 
   if (domains.length === 0) return null
@@ -38,6 +39,7 @@ export function DomainRegions() {
         {domains.map((dc) => {
           const c = nodeCenter(dc)
           const r = domainRadius(dc, nodes, edges)
+          const staged = dc.data.lifecycle === LIFECYCLE.staged
           return (
             <div
               key={dc.id}
@@ -49,7 +51,7 @@ export function DomainRegions() {
                 height: r * 2,
                 transform: "translate(-50%, -50%)",
                 borderRadius: "9999px",
-                border: "2px solid rgba(56, 189, 248, 0.45)",
+                border: `2px ${staged ? "dashed" : "solid"} rgba(56, 189, 248, 0.45)`,
                 background: "rgba(56, 189, 248, 0.08)",
                 boxShadow: "inset 0 0 80px rgba(56, 189, 248, 0.12)",
                 transition: "width 600ms cubic-bezier(0.34, 1.56, 0.64, 1), height 600ms cubic-bezier(0.34, 1.56, 0.64, 1)",

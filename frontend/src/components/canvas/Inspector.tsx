@@ -1,6 +1,7 @@
 import { useState } from "react"
 import {
   AlertTriangle,
+  Clock,
   Loader2,
   Power,
   PowerOff,
@@ -13,8 +14,8 @@ import {
 import { toast } from "sonner"
 import { TEMPLATE_BY_ID } from "@/constants/templates"
 import type { ConfigField } from "@/constants/templates"
-import { NODE_STATUS } from "@/constants/topology"
-import { caTier, caDepth, domainMembership } from "@/lib/topology"
+import { LIFECYCLE } from "@/constants/topology"
+import { caTier, caDepth, domainMembership, isDeployed } from "@/lib/topology"
 import { useTopologyStore } from "@/store/topology"
 import { CAPABILITIES } from "@/constants/auth"
 import { useCan } from "@/hooks/useCan"
@@ -168,8 +169,10 @@ export function Inspector() {
   const { data } = node
   const def = TEMPLATE_BY_ID[data.typeId]
   const Icon = def?.icon ?? Settings
-  const isConfigured = data.status === NODE_STATUS.configured
-  const isConfiguring = data.status === NODE_STATUS.configuring
+  const isConfigured = isDeployed(data)
+  const isConfiguring = data.lifecycle === LIFECYCLE.deploying
+  const isStaged = data.lifecycle === LIFECYCLE.staged
+  const isFailed = data.lifecycle === LIFECYCLE.failed
 
   const tier =
     data.typeId === "certificateAuthority" ? caTier(nodeId, edges) : null
@@ -206,7 +209,7 @@ export function Inspector() {
 
   const hasConfigFields = !!(def?.configFields && def.configFields.length > 0)
   const showConfigForm =
-    (!isConfigured && !isConfiguring) ||
+    (!isConfigured && !isConfiguring && !isStaged) ||
     (isConfigured && reconfiguring)
 
   return (
@@ -234,15 +237,21 @@ export function Inspector() {
           <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-xs">
             <span className="text-muted-foreground">Role</span>
             <span>{def?.label ?? data.typeId}</span>
-            {(data.status === NODE_STATUS.unconfigured || data.status === NODE_STATUS.configuring) && (
+            {(!isConfigured || isConfiguring) && (
               <>
                 <span className="text-muted-foreground">Status</span>
                 <span className="flex items-center gap-1">
-                  {data.status === NODE_STATUS.unconfigured && (
-                    <><AlertTriangle className="h-3 w-3 text-amber-500" /> unconfigured</>
+                  {data.lifecycle === LIFECYCLE.draft && (
+                    <><AlertTriangle className="h-3 w-3 text-amber-500" /> draft</>
                   )}
-                  {data.status === NODE_STATUS.configuring && (
-                    <><Loader2 className="h-3 w-3 animate-spin text-muted-foreground" /> configuring…</>
+                  {isStaged && (
+                    <><Clock className="h-3 w-3 text-sky-500" /> staged</>
+                  )}
+                  {isConfiguring && (
+                    <><Loader2 className="h-3 w-3 animate-spin text-muted-foreground" /> deploying…</>
+                  )}
+                  {isFailed && (
+                    <><AlertTriangle className="h-3 w-3 text-red-500" /> failed</>
                   )}
                 </span>
               </>
@@ -303,7 +312,7 @@ export function Inspector() {
           )}
         </section>
 
-        {/* Configuration inputs (shown when unconfigured with fields, or reconfiguring) */}
+        {/* Configuration inputs (shown when draft/failed with fields, or reconfiguring) */}
         {showConfigForm && hasConfigFields && (
           <section className="flex flex-col gap-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -328,7 +337,7 @@ export function Inspector() {
         )}
 
         {/* Simple configure (no config fields) */}
-        {!isConfigured && !isConfiguring && !hasConfigFields && (
+        {!isConfigured && !isConfiguring && !isStaged && !hasConfigFields && (
           <section className="flex flex-col gap-2">
             <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-600">
               <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
@@ -350,6 +359,14 @@ export function Inspector() {
           <section className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             Cloning VM…
+          </section>
+        )}
+
+        {/* Staged — pending a deploy that will actually create it */}
+        {isStaged && (
+          <section className="flex items-start gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2 text-xs text-sky-600">
+            <Clock className="mt-0.5 h-3 w-3 shrink-0" />
+            Staged — will be created when deployed.
           </section>
         )}
 

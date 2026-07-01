@@ -21,6 +21,7 @@ import type { Edge, Node } from "@xyflow/react"
 import type { Viewport } from "@xyflow/react"
 
 import { STORAGE_KEYS } from "@/constants"
+import { LIFECYCLE } from "@/constants/topology"
 import type { MachineData } from "@/store/topology"
 import { DEFAULT_VIEWPORT, useTopologyStore } from "@/store/topology"
 import { withSuppressedAutosave } from "@/lib/projectAutosave"
@@ -35,6 +36,47 @@ export interface Project {
   viewport: Viewport
   dirty: boolean
   updatedAt: number
+}
+
+/** A v0 node's `data` shape — pre-lifecycle, keyed by the old `status` field. */
+interface LegacyMachineData {
+  typeId: string
+  name: string
+  status?: string
+  config?: Record<string, string>
+  progress?: number
+  phase?: string
+  jobId?: string
+}
+
+/**
+ * v0 → v1: `status` → `lifecycle` + `poweredOn` (+ `lastDeployedConfig` for
+ * already-configured nodes, so domains/CA chains hanging off them don't read
+ * as drifted the moment they load). Idempotent — already-migrated data (has
+ * `lifecycle`) passes through unchanged.
+ */
+function migrateNodeData(data: LegacyMachineData | MachineData): MachineData {
+  if ("lifecycle" in data) return data
+  const { status, ...rest } = data
+  switch (status) {
+    case "configuring":
+      return {
+        ...rest,
+        lifecycle: rest.jobId ? LIFECYCLE.deploying : LIFECYCLE.draft,
+        poweredOn: false,
+      }
+    case "configured":
+      return {
+        ...rest,
+        lifecycle: LIFECYCLE.deployed,
+        poweredOn: true,
+        lastDeployedConfig: rest.config,
+      }
+    case "error":
+      return { ...rest, lifecycle: LIFECYCLE.failed, poweredOn: false }
+    default:
+      return { ...rest, lifecycle: LIFECYCLE.draft, poweredOn: false }
+  }
 }
 
 function emptyProject(name: string): Project {
@@ -187,6 +229,20 @@ export const useProjectsStore = create<ProjectsState>()(
         }))
       },
     }),
-    { name: STORAGE_KEYS.projects },
+    {
+      name: STORAGE_KEYS.projects,
+      version: 1,
+      migrate: (persistedState, version) => {
+        if (version >= 1) return persistedState as ProjectsState
+        const state = persistedState as ProjectsState
+        return {
+          ...state,
+          projects: (state.projects ?? []).map((p) => ({
+            ...p,
+            nodes: p.nodes.map((n) => ({ ...n, data: migrateNodeData(n.data) })),
+          })),
+        }
+      },
+    },
   ),
 )

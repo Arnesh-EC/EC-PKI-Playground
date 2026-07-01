@@ -4,9 +4,47 @@
  */
 
 import type { Edge, Node } from "@xyflow/react"
-import { EDGE_TYPE, NODE_STATUS } from "@/constants/topology"
+import { EDGE_TYPE, LIFECYCLE } from "@/constants/topology"
 import type { EdgeType } from "@/constants/topology"
 import type { MachineData } from "@/store/topology"
+
+// ---------------------------------------------------------------------------
+// Lifecycle derived state
+// ---------------------------------------------------------------------------
+
+/** Deployed on the host, whether or not its config has since drifted. */
+export function isDeployed(data: MachineData): boolean {
+  return data.lifecycle === LIFECYCLE.deployed || data.lifecycle === LIFECYCLE.drifted
+}
+
+/** Deployed with a config that no longer matches what was last deployed. */
+export function isDrifted(data: MachineData): boolean {
+  if (!isDeployed(data)) return false
+  if (!data.lastDeployedConfig) return data.config !== undefined
+  if (!data.config) return false
+  const keys = new Set([
+    ...Object.keys(data.config),
+    ...Object.keys(data.lastDeployedConfig),
+  ])
+  for (const key of keys) {
+    if (data.config[key] !== data.lastDeployedConfig[key]) return true
+  }
+  return false
+}
+
+/** Has a concrete identity on the canvas beyond a bare, unstaged draft. */
+export function isRealized(data: MachineData): boolean {
+  return (
+    data.lifecycle === LIFECYCLE.staged ||
+    data.lifecycle === LIFECYCLE.deploying ||
+    isDeployed(data)
+  )
+}
+
+/** Valid endpoint for a new edge or domain join — staged nodes can be wired up ahead of deploy. */
+export function isConnectable(data: MachineData): boolean {
+  return data.lifecycle === LIFECYCLE.staged || isDeployed(data)
+}
 
 // ---------------------------------------------------------------------------
 // Edge type inference
@@ -246,7 +284,7 @@ export function truncateLabel(label: string, max = DOMAIN_LABEL_MAX_CHARS): stri
  */
 export function isDomainEligible(node: Node<MachineData>, edges: Edge[]): boolean {
   if (node.data.typeId === "domainController") return false
-  if (node.data.status !== NODE_STATUS.configured) return false
+  if (!isConnectable(node.data)) return false
   if (
     node.data.typeId === "certificateAuthority" &&
     caTier(node.id, edges) === "root"
@@ -270,7 +308,7 @@ export function findDomainForNode(
   for (const dc of nodes) {
     if (dc.id === node.id) continue
     if (dc.data.typeId !== "domainController") continue
-    if (dc.data.status !== NODE_STATUS.configured) continue
+    if (!isConnectable(dc.data)) continue
     const dcc = nodeCenter(dc)
     const dist = Math.hypot(c.x - dcc.x, c.y - dcc.y)
     if (dist <= domainRadius(dc, nodes, edges) && dist < bestDist) {
@@ -422,10 +460,10 @@ export function canConnect(
     return { ok: false, reason: "Node not found." }
   }
 
-  if (source.data.status !== NODE_STATUS.configured) {
+  if (!isConnectable(source.data)) {
     return { ok: false, reason: `"${source.data.name}" must be configured first.` }
   }
-  if (target.data.status !== NODE_STATUS.configured) {
+  if (!isConnectable(target.data)) {
     return { ok: false, reason: `"${target.data.name}" must be configured first.` }
   }
 

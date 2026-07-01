@@ -22,8 +22,8 @@ import {
 import { create } from "zustand"
 
 import { AUTO_NAME_PREFIX } from "@/constants/templates"
-import { EDGE_TYPE, NODE_STATUS } from "@/constants/topology"
-import type { NodeStatus } from "@/constants/topology"
+import { EDGE_TYPE, LIFECYCLE } from "@/constants/topology"
+import type { Lifecycle } from "@/constants/topology"
 import { cloneVm } from "@/lib/api"
 import { openJobSocket } from "@/lib/ws"
 import {
@@ -55,14 +55,17 @@ const STANDALONE_CLONE = {
 export interface MachineData extends Record<string, unknown> {
   typeId: string
   name: string
-  status: NodeStatus
+  lifecycle: Lifecycle
+  poweredOn: boolean
+  /** Config as of the last successful deploy; compared against `config` to derive drift. */
+  lastDeployedConfig?: Record<string, string>
   config?: Record<string, string>
-  /** 0–100 while `status === configuring`; drives the node's progress bar. */
+  /** 0–100 while `lifecycle === deploying`; drives the node's progress bar. */
   progress?: number
   /** Human label of the current configuration step (from the progress stream). */
   phase?: string
   /**
-   * Backend clone job id while `status === configuring` on the `standalone`
+   * Backend clone job id while `lifecycle === deploying` on the `standalone`
    * template. Persisted (rides `MachineData` into localStorage) so a reload
    * can resubscribe to the job's WebSocket instead of losing it — see
    * `attachJobSocket`/`resumeJobs`.
@@ -110,14 +113,21 @@ function attachJobSocket(
 
   const close = openJobSocket(jobId, token, {
     // Clones queue behind the backend's worker concurrency cap; surface
-    // that wait as a phase label rather than a separate node status so
-    // existing status-driven UI (badges, counts) doesn't need to change.
+    // that wait as a phase label rather than a separate lifecycle state so
+    // existing lifecycle-driven UI (badges, counts) doesn't need to change.
     onQueued: () => patch({ phase: "Queued", progress: 0 }),
     onRunning: () => patch({ phase: "Starting", progress: 0 }),
     onProgress: (e) => patch({ progress: e.percent, phase: e.phase }),
     onDone: () => {
       activeSockets.delete(nodeId)
-      patch({ status: NODE_STATUS.configured, progress: 100, jobId: undefined })
+      const node = useTopologyStore.getState().nodes.find((n) => n.id === nodeId)
+      patch({
+        lifecycle: LIFECYCLE.deployed,
+        poweredOn: true,
+        lastDeployedConfig: node?.data.config,
+        progress: 100,
+        jobId: undefined,
+      })
       close()
     },
     onError: (e) => {
@@ -125,12 +135,12 @@ function attachJobSocket(
       // status 0 is a synthetic frame from `lib/ws.ts` for a socket that
       // closed without a terminal frame — e.g. the backend's snapshot expired
       // (4404) or the WS dropped mid-clone. That's not necessarily a failed
-      // clone, so revert to unconfigured (retryable) rather than a hard
-      // error; a real backend `error` frame (status > 0) is a genuine failure.
+      // clone, so revert to draft (retryable) rather than a hard error; a
+      // real backend `error` frame (status > 0) is a genuine failure.
       if (e.status === 0) {
-        patch({ status: NODE_STATUS.unconfigured, progress: undefined, phase: undefined, jobId: undefined })
+        patch({ lifecycle: LIFECYCLE.draft, progress: undefined, phase: undefined, jobId: undefined })
       } else {
-        patch({ status: NODE_STATUS.error, jobId: undefined })
+        patch({ lifecycle: LIFECYCLE.failed, jobId: undefined })
       }
       close()
     },
@@ -166,10 +176,10 @@ interface TopologyState {
   applyDomainChanges: (changes: DomainSyncChange[]) => void
   configureNode: (id: string, config?: Record<string, string>) => void
   /**
-   * Reattaches job-progress sockets for any node still `configuring` after a
-   * reload (has a persisted `jobId`), and reverts any `configuring` node with
+   * Reattaches job-progress sockets for any node still `deploying` after a
+   * reload (has a persisted `jobId`), and reverts any `deploying` node with
    * no `jobId` (simulated templates, or a reload mid-enqueue) back to
-   * `unconfigured` so it's retryable. Called after `loadSnapshot`.
+   * `draft` so it's retryable. Called after `loadSnapshot`.
    */
   resumeJobs: () => void
   renameNode: (id: string, name: string) => void
@@ -210,7 +220,8 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
       data: {
         typeId,
         name,
-        status: NODE_STATUS.unconfigured,
+        lifecycle: LIFECYCLE.draft,
+        poweredOn: false,
       },
     }
 
@@ -327,7 +338,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
     const node = get().nodes.find((n) => n.id === id)
 
     patch({
-      status: NODE_STATUS.configuring,
+      lifecycle: LIFECYCLE.deploying,
       progress: 0,
       phase: undefined,
       jobId: undefined,
@@ -346,19 +357,25 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
           patch({ jobId: job_id })
           attachJobSocket(id, job_id, token, patch)
         })
-        .catch(() => patch({ status: NODE_STATUS.error }))
+        .catch(() => patch({ lifecycle: LIFECYCLE.failed }))
       return
     }
 
     // Simulated templates: animate a fake 0→100 bar over the delay so every node
-    // shows consistent progress UI, then mark configured.
+    // shows consistent progress UI, then mark deployed.
     const start = Date.now()
     const DURATION = 1800
     const timer = setInterval(() => {
       const pct = Math.min(100, ((Date.now() - start) / DURATION) * 100)
       if (pct >= 100) {
         clearInterval(timer)
-        patch({ status: NODE_STATUS.configured, progress: 100 })
+        const current = get().nodes.find((n) => n.id === id)
+        patch({
+          lifecycle: LIFECYCLE.deployed,
+          poweredOn: true,
+          lastDeployedConfig: current?.data.config,
+          progress: 100,
+        })
       } else {
         patch({ progress: Math.round(pct) })
       }
@@ -368,13 +385,13 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
   resumeJobs() {
     const token = useAuthStore.getState().token
     // Without a live token we can neither authenticate a resumed socket nor
-    // legitimately conclude a job failed — leave `configuring` nodes as-is
+    // legitimately conclude a job failed — leave `deploying` nodes as-is
     // rather than reverting them (belt-and-suspenders alongside the
     // `sessionReady` gate in App.tsx that should prevent this from firing
     // with a null token in the first place).
     if (!token) return
     for (const node of get().nodes) {
-      if (node.data.status !== NODE_STATUS.configuring) continue
+      if (node.data.lifecycle !== LIFECYCLE.deploying) continue
       if (activeSockets.has(node.id)) continue
 
       const patch = (data: Partial<MachineData>) =>
@@ -389,8 +406,8 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
       } else {
         // No job to resume (simulated template, or reload happened before the
         // clone request returned a job id) — revert so it's retryable rather
-        // than stuck "configuring" forever.
-        patch({ status: NODE_STATUS.unconfigured, progress: undefined, phase: undefined })
+        // than stuck "deploying" forever.
+        patch({ lifecycle: LIFECYCLE.draft, progress: undefined, phase: undefined })
       }
     }
   },
