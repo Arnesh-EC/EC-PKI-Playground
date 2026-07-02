@@ -7,9 +7,17 @@ factory. Adding a new feature area means: create ``routers/foo.py`` with a
 
 from fastapi import APIRouter
 
-from app.routers import auth, config, deploy, meta, vm, ws
+from app.routers import auth, config, deploy, meta, orchestrator, vm, ws
 
 api_router = APIRouter(prefix="/api")
 
-for _router in (meta.router, config.router, auth.router, vm.router, deploy.router, ws.router):
+for _router in (
+    meta.router,
+    config.router,
+    auth.router,
+    vm.router,
+    deploy.router,
+    orchestrator.router,
+    ws.router,
+):
     api_router.include_router(_router)
