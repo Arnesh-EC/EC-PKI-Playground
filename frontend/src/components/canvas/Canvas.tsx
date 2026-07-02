@@ -23,6 +23,7 @@ import {
   type MachineData,
   type DomainSyncChange,
 } from "@/store/topology"
+import { useStagingStore } from "@/store/staging"
 import { EDGE_TYPE } from "@/constants/topology"
 import { findOverlappingId, nearestFreePosition } from "@/lib/topology"
 import { useResolvedTheme } from "@/hooks/useTheme"
@@ -45,6 +46,7 @@ interface DragSnapshot {
 export function Canvas() {
   const nodes = useTopologyStore((s) => s.nodes)
   const edges = useTopologyStore((s) => s.edges)
+  const deploying = useStagingStore((s) => s.deploying)
   // Select individual action refs (stable across renders) rather than the
   // whole store, so the callbacks below aren't recreated on every state
   // change — recreating onSelectionChange feeds a React Flow update loop.
@@ -255,6 +257,7 @@ export function Canvas() {
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
+      if (deploying) return
       const typeId = e.dataTransfer.getData(DRAG_TYPE)
       if (!typeId) return
 
@@ -264,11 +267,11 @@ export function Canvas() {
       })
       addNode(typeId, position)
     },
-    [screenToFlowPosition, addNode],
+    [screenToFlowPosition, addNode, deploying],
   )
 
   return (
-    <div ref={wrapperRef} className="flex-1 h-full">
+    <div ref={wrapperRef} className="relative flex-1 h-full">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -288,6 +291,9 @@ export function Canvas() {
         defaultViewport={initialViewport}
         colorMode={resolvedTheme}
         proOptions={{ hideAttribution: true }}
+        nodesDraggable={!deploying}
+        nodesConnectable={!deploying}
+        elementsSelectable={!deploying}
       >
         <DomainRegions />
         <Background gap={16} size={1} />
@@ -299,6 +305,14 @@ export function Canvas() {
         onConfirm={confirmDomainChanges}
         onCancel={cancelDomainChanges}
       />
+      {deploying && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center pt-3">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-full border bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+            Deploying — canvas locked
+          </div>
+        </div>
+      )}
     </div>
   )
 }

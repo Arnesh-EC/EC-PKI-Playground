@@ -11,15 +11,22 @@ import type { StagedOp } from "@/lib/staging"
  */
 export function StagedRemoveDialog({
   ops,
+  hostNote,
   onConfirm,
   onCancel,
 }: {
-  /** `[op, ...dependents]`, or null when nothing is pending removal. */
+  /**
+   * `[op, ...dependents]` for a cascading op removal, or `[]` to confirm a
+   * plain node delete that has nothing staged to cascade. `null` when
+   * nothing is pending removal.
+   */
   ops: StagedOp[] | null
+  /** Shown for a node that's already deployed — deleting it only removes the canvas node, not the VM. */
+  hostNote?: boolean
   onConfirm: () => void
   onCancel: () => void
 }) {
-  const open = !!ops && ops.length > 0
+  const open = ops !== null
   const list = ops ?? []
   const count = list.length
 
@@ -34,24 +41,37 @@ export function StagedRemoveDialog({
         <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[1px] data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
         <AlertDialog.Popup className="fixed left-1/2 top-1/2 z-50 w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border bg-popover p-5 text-popover-foreground shadow-lg ring-1 ring-foreground/10 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
           <AlertDialog.Title className="text-sm font-semibold">
-            Remove {count === 1 ? "this operation" : `${count} operations`}?
+            {count === 0
+              ? "Delete this node?"
+              : `Remove ${count === 1 ? "this operation" : `${count} operations`}?`}
           </AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-xs text-muted-foreground">
-            {count === 1
-              ? "This operation depends on nothing else, but removing it will undo:"
-              : `Removing this will also undo ${count - 1} dependent ${count - 1 === 1 ? "operation" : "operations"}:`}
+            {count === 0
+              ? hostNote
+                ? "The VM is not removed from the host — this only removes the node from the canvas."
+                : "This will remove the node from the canvas."
+              : count === 1
+                ? "This operation depends on nothing else, but removing it will undo:"
+                : `Removing this will also undo ${count - 1} dependent ${count - 1 === 1 ? "operation" : "operations"}:`}
           </AlertDialog.Description>
-          <ul className="mt-2 max-h-40 list-disc space-y-1 overflow-y-auto pl-4 text-xs text-muted-foreground">
-            {list.map((op) => (
-              <li key={op.id}>{op.label}</li>
-            ))}
-          </ul>
+          {count > 0 && (
+            <ul className="mt-2 max-h-40 list-disc space-y-1 overflow-y-auto pl-4 text-xs text-muted-foreground">
+              {list.map((op) => (
+                <li key={op.id}>{op.label}</li>
+              ))}
+            </ul>
+          )}
+          {count > 0 && hostNote && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              The VM is not removed from the host — this only removes the node from the canvas.
+            </p>
+          )}
           <div className="mt-5 flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={onCancel}>
               Cancel
             </Button>
             <Button variant="destructive" size="sm" onClick={onConfirm}>
-              Remove {count === 1 ? "operation" : `${count} operations`}
+              {count === 0 ? "Delete node" : `Remove ${count === 1 ? "operation" : `${count} operations`}`}
             </Button>
           </div>
         </AlertDialog.Popup>

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { Fragment, useState } from "react"
 import {
   AlertTriangle,
   Clock,
@@ -15,7 +15,8 @@ import { toast } from "sonner"
 import { TEMPLATE_BY_ID } from "@/constants/templates"
 import type { ConfigField } from "@/constants/templates"
 import { LIFECYCLE } from "@/constants/topology"
-import { caTier, caDepth, domainMembership, isDeployed } from "@/lib/topology"
+import { caTier, caDepth, domainMembership, driftedFields, isDeployed, isDrifted } from "@/lib/topology"
+import { OP_KIND, OP_STATUS } from "@/lib/staging"
 import type { StagedOp } from "@/lib/staging"
 import { useTopologyStore } from "@/store/topology"
 import { opsReferencingNode, useStagingStore } from "@/store/staging"
@@ -71,9 +72,11 @@ function PlannedAction({
 function ConfigForm({
   fields,
   onSubmit,
+  disabled = false,
 }: {
   fields: ConfigField[]
   onSubmit: (values: Record<string, string>) => void
+  disabled?: boolean
 }) {
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(fields.map((f) => [f.key, f.default])),
@@ -138,6 +141,7 @@ function ConfigForm({
       <Button
         size="sm"
         className="mt-1 w-full"
+        disabled={disabled}
         onClick={submit}
       >
         <Settings className="mr-2 h-3.5 w-3.5" />
@@ -160,6 +164,9 @@ export function Inspector() {
 
   const canPower = useCan(CAPABILITIES.vmPower)
   const canUpdate = useCan(CAPABILITIES.vmUpdate)
+  const deploying = useStagingStore((s) => s.deploying)
+  const ops = useStagingStore((s) => s.ops)
+  const retryDeploy = useStagingStore((s) => s.deploy)
 
   const node = nodes.find((n) => n.id === selectedId) ?? null
 
@@ -177,6 +184,9 @@ export function Inspector() {
   const isConfiguring = data.lifecycle === LIFECYCLE.deploying
   const isStaged = data.lifecycle === LIFECYCLE.staged
   const isFailed = data.lifecycle === LIFECYCLE.failed
+  const failedOp = ops.find(
+    (op) => op.kind === OP_KIND.createVm && op.targetNodeId === nodeId && op.status === OP_STATUS.error,
+  )
 
   const tier =
     data.typeId === "certificateAuthority" ? caTier(nodeId, edges) : null
@@ -202,7 +212,10 @@ export function Inspector() {
 
   function handleDelete() {
     const affected = opsReferencingNode(useStagingStore.getState().ops, nodeId)
-    if (affected.length === 0) {
+    // A deployed node always confirms — deleting only removes it from the
+    // canvas, the VM itself is left running on the host, and that's worth a
+    // pause even when there's nothing staged to cascade.
+    if (affected.length === 0 && !isConfigured) {
       store.removeNode(nodeId)
       toast("Node removed.")
       return
@@ -254,7 +267,7 @@ export function Inspector() {
           <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-xs">
             <span className="text-muted-foreground">Role</span>
             <span>{def?.label ?? data.typeId}</span>
-            {(!isConfigured || isConfiguring) && (
+            {(!isConfigured || isConfiguring || isDrifted(data)) && (
               <>
                 <span className="text-muted-foreground">Status</span>
                 <span className="flex items-center gap-1">
@@ -269,6 +282,9 @@ export function Inspector() {
                   )}
                   {isFailed && (
                     <><AlertTriangle className="h-3 w-3 text-red-500" /> failed</>
+                  )}
+                  {isDrifted(data) && (
+                    <><RefreshCw className="h-3 w-3 text-orange-500" /> drifted</>
                   )}
                 </span>
               </>
@@ -347,6 +363,7 @@ export function Inspector() {
                   key={nodeId}
                   fields={def!.configFields!}
                   onSubmit={handleConfigure}
+                  disabled={deploying}
                 />
               </>
             )}
@@ -363,6 +380,7 @@ export function Inspector() {
             <Button
               size="sm"
               className="w-full"
+              disabled={deploying}
               onClick={() => handleConfigure()}
             >
               <Settings className="mr-2 h-3.5 w-3.5" />
@@ -387,6 +405,51 @@ export function Inspector() {
           </section>
         )}
 
+        {/* Failed — the createVm op errored out; offer the same retry the Staged panel exposes */}
+        {isFailed && (
+          <section className="flex flex-col gap-2">
+            <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/5 p-2 text-xs text-red-600">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              <div className="flex flex-col gap-1">
+                <span>Deploy failed.</span>
+                {failedOp?.detail && (
+                  <span className="text-[11px] text-muted-foreground">{failedOp.detail}</span>
+                )}
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full justify-start gap-2"
+              disabled={deploying}
+              onClick={() => retryDeploy()}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Retry deploy
+            </Button>
+          </section>
+        )}
+
+        {/* Drifted — deployed, but the stored config no longer matches what was last deployed */}
+        {isDrifted(data) && data.config && (
+          <section className="flex flex-col gap-2">
+            <div className="flex items-start gap-2 rounded-md border border-orange-500/30 bg-orange-500/5 p-2 text-xs text-orange-600">
+              <RefreshCw className="mt-0.5 h-3 w-3 shrink-0" />
+              <div className="flex flex-col gap-1">
+                <span>Configuration changed since last deploy.</span>
+                {driftedFields(data).map((key) => {
+                  const fieldLabel = def?.configFields?.find((f) => f.key === key)?.label ?? key
+                  return (
+                    <span key={key} className="text-[11px] text-muted-foreground">
+                      {fieldLabel}: {data.lastDeployedConfig?.[key] ?? "—"} → {data.config?.[key] ?? "—"}
+                    </span>
+                  )
+                })}
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Stored config values (post-configure) */}
         {isConfigured && data.config && !reconfiguring && (
           <section className="flex flex-col gap-2">
@@ -398,10 +461,10 @@ export function Inspector() {
                 const fieldLabel =
                   def?.configFields?.find((f) => f.key === key)?.label ?? key
                 return (
-                  <>
-                    <span key={`k-${key}`} className="text-muted-foreground">{fieldLabel}</span>
-                    <span key={`v-${key}`} className="truncate">{value}</span>
-                  </>
+                  <Fragment key={key}>
+                    <span className="text-muted-foreground">{fieldLabel}</span>
+                    <span className="truncate">{value}</span>
+                  </Fragment>
                 )
               })}
             </div>
@@ -421,20 +484,20 @@ export function Inspector() {
                     icon={Power}
                     label="Power On"
                     tip={`Future: POST /api/vm/${data.name}/power-on`}
-                    disabled={!canPower}
+                    disabled={!canPower || deploying}
                   />
                   <PlannedAction
                     icon={PowerOff}
                     label="Power Off"
                     tip={`Future: POST /api/vm/${data.name}/power-off`}
-                    disabled={!canPower}
+                    disabled={!canPower || deploying}
                   />
                   {hasConfigFields && (
                     <PlannedAction
                       icon={RefreshCw}
                       label="Reconfigure"
                       tip="Edit configuration and re-apply"
-                      disabled={!canUpdate}
+                      disabled={!canUpdate || deploying}
                       onClick={() => setReconfiguring(true)}
                     />
                   )}
@@ -443,7 +506,7 @@ export function Inspector() {
                       icon={RefreshCw}
                       label="Reconfigure"
                       tip={`Future: PATCH /api/vm/${data.name}`}
-                      disabled={!canUpdate}
+                      disabled={!canUpdate || deploying}
                     />
                   )}
                   {data.typeId === "domainController" && (
@@ -478,6 +541,7 @@ export function Inspector() {
             variant="destructive"
             size="sm"
             className="w-full justify-start gap-2"
+            disabled={deploying}
             onClick={handleDelete}
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -488,6 +552,7 @@ export function Inspector() {
 
       <StagedRemoveDialog
         ops={pendingDelete}
+        hostNote={isConfigured}
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
       />

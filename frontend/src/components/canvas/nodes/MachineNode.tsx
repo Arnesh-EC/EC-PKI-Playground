@@ -1,11 +1,19 @@
-import { AlertTriangle, Clock, Loader2 } from "lucide-react"
+import { AlertTriangle, Clock, Loader2, RefreshCw } from "lucide-react"
 import { Handle, Position, useEdges, useNodes } from "@xyflow/react"
 import type { NodeProps, Node } from "@xyflow/react"
 import { cn } from "@/lib/utils"
 import { TEMPLATE_BY_ID } from "@/constants/templates"
+import type { TemplateDef } from "@/constants/templates"
 import { EDGE_TYPE, LIFECYCLE } from "@/constants/topology"
 import type { Lifecycle } from "@/constants/topology"
-import { caTier, caDepth, domainMembership, isConnectable, truncateLabel } from "@/lib/topology"
+import {
+  caTier,
+  caDepth,
+  domainMembership,
+  driftedFields,
+  isConnectable,
+  truncateLabel,
+} from "@/lib/topology"
 import { useTopologyStore } from "@/store/topology"
 import type { MachineData } from "@/store/topology"
 import { Badge } from "@/components/ui/badge"
@@ -55,6 +63,23 @@ function LifecycleBadge({ lifecycle }: { lifecycle: Lifecycle }) {
   return null
 }
 
+/** Amber badge shown on a deployed node whose config has since been edited — deploy skips these in v1, so this is purely informational. */
+function DriftBadge({ data, def }: { data: MachineData; def?: TemplateDef }) {
+  const fields = driftedFields(data)
+  if (fields.length === 0) return null
+  const labels = fields.map((key) => def?.configFields?.find((f) => f.key === key)?.label ?? key)
+  return (
+    <Badge
+      variant="secondary"
+      className="flex items-center gap-1 text-[10px] text-orange-500 border-orange-500/30 max-w-full"
+      title={`Config changed since last deploy: ${labels.join(", ")}`}
+    >
+      <RefreshCw className="h-2.5 w-2.5 shrink-0" />
+      <span className="truncate">drifted</span>
+    </Badge>
+  )
+}
+
 export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>) {
   const def = TEMPLATE_BY_ID[data.typeId]
   const nodes = useNodes<Node<MachineData>>()
@@ -85,7 +110,8 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         data.lifecycle === LIFECYCLE.draft && "border-amber-500/40",
         data.lifecycle === LIFECYCLE.staged && "border-sky-500/40 border-dashed opacity-80",
         data.lifecycle === LIFECYCLE.deploying && "border-muted",
-        (data.lifecycle === LIFECYCLE.deployed || data.lifecycle === LIFECYCLE.drifted) && "border-border",
+        data.lifecycle === LIFECYCLE.deployed && "border-border",
+        data.lifecycle === LIFECYCLE.drifted && "border-orange-500/40",
         data.lifecycle === LIFECYCLE.failed && "border-red-500/50",
         !isOverlapping && memberCount !== null && memberCount > 0 &&
           "border-sky-500/60 shadow-[0_0_18px_4px_rgba(14,165,233,0.35)] " +
@@ -146,6 +172,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
       {/* Body */}
       <div className="px-3 py-2 flex flex-col gap-1.5">
         <LifecycleBadge lifecycle={data.lifecycle} />
+        {data.lifecycle === LIFECYCLE.drifted && <DriftBadge data={data} def={def} />}
 
         {/* Live progress while deploying */}
         {data.lifecycle === LIFECYCLE.deploying && (

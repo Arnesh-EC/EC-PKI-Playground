@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { Popover } from "@base-ui/react/popover"
 import {
   AlertTriangle,
   Building2,
@@ -14,7 +15,6 @@ import {
   X,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
-import { toast } from "sonner"
 
 import { OP_KIND, OP_STATUS, transitiveDependents } from "@/lib/staging"
 import type { StagedOp } from "@/lib/staging"
@@ -49,9 +49,24 @@ function StatusGlyph({ op }: { op: StagedOp }) {
       return <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" />
     case OP_STATUS.error:
       return (
-        <span title={op.detail ?? "Failed"}>
-          <AlertTriangle className="h-3 w-3 shrink-0 text-red-500" />
-        </span>
+        <Popover.Root>
+          <Popover.Trigger
+            className="flex shrink-0 items-center"
+            aria-label={op.detail ?? "Deploy failed"}
+          >
+            <AlertTriangle className="h-3 w-3 shrink-0 text-red-500" />
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Positioner side="left" sideOffset={6} className="z-50">
+              <Popover.Popup className="w-[min(280px,calc(100vw-2rem))] rounded-lg border bg-popover p-3 text-xs text-popover-foreground shadow-lg ring-1 ring-foreground/10 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
+                <p className="font-medium text-red-500">Deploy failed</p>
+                <p className="mt-1 text-muted-foreground">
+                  {op.detail ?? "No further detail available."}
+                </p>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       )
     case OP_STATUS.cancelled:
       return <MinusCircle className="h-3 w-3 shrink-0 text-muted-foreground/30" />
@@ -101,7 +116,6 @@ export function StagedPanel() {
   function handleDeploy() {
     if (deploying || ops.length === 0) return
     deploy()
-    toast.info("Deploy pipeline arrives in M3/M4 — nothing is sent to the backend yet.")
   }
 
   const hasErrors = ops.some((op) => op.status === OP_STATUS.error)

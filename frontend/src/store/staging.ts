@@ -16,17 +16,22 @@
  */
 
 import { create } from "zustand"
+import { toast } from "sonner"
 
 import { LIFECYCLE } from "@/constants/topology"
+import { deployPlan, type PlanOpPayload } from "@/lib/api"
 import {
   OP_KIND,
   OP_STATUS,
+  guestVmName,
   inferDependsOn,
   transitiveDependents,
   type OpKind,
   type StagedOp,
 } from "@/lib/staging"
 import { domainJoinEdge } from "@/lib/topology"
+import { openJobSocket, type OpRunState } from "@/lib/ws"
+import { useAuthStore } from "@/store/auth"
 import { useTopologyStore } from "@/store/topology"
 
 /** Reverts one op's optimistic canvas effect — the inverse of whatever `store/topology.ts` applied when it was staged. */
@@ -71,12 +76,147 @@ interface StagingState {
   /** Reverts and removes `opId` plus everything that transitively depends on it. */
   removeOpCascade: (opId: string) => void
   setOpState: (opId: string, patch: Partial<StagedOp>) => void
-  /** Swaps in another project's op list — called alongside `loadSnapshot` on project switch. */
+  /** Swaps in another project's op list — called alongside `loadSnapshot` on project switch. Resumes an in-flight plan job, if any. */
   loadOps: (ops: StagedOp[], deployJobId: string | null) => void
-  /** Sends the current ops to the backend plan runner. Wired up in M3/M4 — no-op for now. */
+  /** Sends the current ops to the backend plan runner and attaches the plan-progress socket. */
   deploy: () => void
-  /** Re-attaches to an in-flight plan job's WebSocket after a reload. Wired up in M4 — no-op for now. */
+  /** Re-attaches to an in-flight plan job's WebSocket after a reload/project switch. */
   resumePlanJob: () => void
+}
+
+/** Builds one op's wire params. Only `createVm` needs anything beyond what's already staged — the deploy-time VM name and whether it's a real (`standalone`) or simulated clone. */
+function buildOpParams(op: StagedOp, token: string | null | undefined): Record<string, string> {
+  if (op.kind !== OP_KIND.createVm) return op.params
+  const node = useTopologyStore.getState().nodes.find((n) => n.id === op.targetNodeId)
+  return {
+    ...op.params,
+    vmName: guestVmName(node?.data.name ?? op.targetNodeId, token),
+    simulate: node?.data.typeId === "standalone" ? "false" : "true",
+  }
+}
+
+/** Folds one `plan-state` snapshot into the staging list and mirrors createVm/edge transitions onto the canvas. Idempotent — safe to apply the same snapshot more than once (reconnects/replays). */
+function applyPlanState(opsState: Record<string, OpRunState>) {
+  const { ops, setOpState } = useStagingStore.getState()
+  const topology = useTopologyStore.getState()
+
+  for (const [opId, runState] of Object.entries(opsState)) {
+    const op = ops.find((o) => o.id === opId)
+    if (!op) continue
+
+    setOpState(opId, {
+      status: runState.status,
+      progress: runState.percent,
+      detail: runState.detail,
+    })
+
+    if (op.kind === OP_KIND.createVm) {
+      if (runState.status === "running") {
+        topology.patchNodeData(op.targetNodeId, {
+          lifecycle: LIFECYCLE.deploying,
+          progress: runState.percent,
+          phase: runState.phase,
+        })
+      } else if (runState.status === "done") {
+        const node = topology.nodes.find((n) => n.id === op.targetNodeId)
+        topology.patchNodeData(op.targetNodeId, {
+          lifecycle: LIFECYCLE.deployed,
+          poweredOn: true,
+          lastDeployedConfig: node?.data.config,
+          progress: 100,
+          phase: undefined,
+        })
+      } else if (runState.status === "error") {
+        topology.patchNodeData(op.targetNodeId, {
+          lifecycle: LIFECYCLE.failed,
+          progress: undefined,
+          phase: undefined,
+        })
+      }
+      continue
+    }
+
+    // Edge ops (domainJoin/caConnect/webServerCert) — clear ghost styling once
+    // deployed. domainLeave has no edgeId; there's nothing left to commit.
+    if (runState.status === "done" && op.edgeId) {
+      topology.commitEdge(op.edgeId)
+    }
+  }
+}
+
+/** Reverts every non-`done` op back to `staged` (and any `createVm`-target node still `deploying` back to `staged`) — the shared unwind for a plan that ended before every op resolved (socket drop, plan-level crash). */
+function revertNonTerminalToStaged(): void {
+  const { ops } = useStagingStore.getState()
+  const topology = useTopologyStore.getState()
+
+  const reverted = ops.map((op) =>
+    op.status === OP_STATUS.done
+      ? op
+      : { ...op, status: OP_STATUS.staged, progress: undefined, detail: undefined },
+  )
+
+  for (const op of reverted) {
+    if (op.kind === OP_KIND.createVm && op.status === OP_STATUS.staged) {
+      topology.patchNodeData(op.targetNodeId, {
+        lifecycle: LIFECYCLE.staged,
+        progress: undefined,
+        phase: undefined,
+      })
+    }
+  }
+
+  useStagingStore.setState({ ops: reverted, deployJobId: null, deploying: false })
+}
+
+/** Final reconcile once the plan job reaches `done`: apply the last snapshot, drop fully-`done` ops off the list, and reopen `cancelled` ops (skipped only because a dependency failed) as `staged` so "Retry deploy" resends them alongside the op that actually failed. */
+function finishDeploy(result: Record<string, unknown>): void {
+  const opsResult = (result?.ops ?? {}) as Record<string, OpRunState>
+  applyPlanState(opsResult)
+
+  const { ops } = useStagingStore.getState()
+  let errorCount = 0
+  const remaining: StagedOp[] = []
+  for (const op of ops) {
+    const finalState = opsResult[op.id]
+    if (finalState?.status === "done") continue
+    if (finalState?.status === "error") errorCount++
+    remaining.push(
+      finalState?.status === "cancelled"
+        ? { ...op, status: OP_STATUS.staged, progress: undefined, detail: undefined }
+        : op,
+    )
+  }
+
+  useStagingStore.setState({ ops: remaining, deployJobId: null, deploying: false })
+
+  if (errorCount > 0) {
+    toast.error(`Deploy finished with ${errorCount} failed operation${errorCount === 1 ? "" : "s"}.`)
+  } else {
+    toast.success("Deploy complete.")
+  }
+}
+
+// Single in-flight plan socket — a project only ever has one active deploy.
+let planSocketClose: (() => void) | null = null
+
+function attachPlanSocket(jobId: string, token: string | null | undefined) {
+  planSocketClose?.()
+  planSocketClose = openJobSocket(jobId, token, {
+    onPlanState: (e) => applyPlanState(e.ops),
+    onDone: (e) => {
+      planSocketClose = null
+      finishDeploy(e.result)
+    },
+    onError: (e) => {
+      planSocketClose = null
+      revertNonTerminalToStaged()
+      if (e.status === 0) {
+        toast.warning("Lost connection to the deploy job — operations reverted to staged, you can retry.")
+      } else {
+        toast.error(e.detail || "Deploy failed.")
+      }
+    },
+  })
 }
 
 export const useStagingStore = create<StagingState>()((set, get) => ({
@@ -131,15 +271,56 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
   },
 
   loadOps(ops, deployJobId) {
+    planSocketClose?.()
+    planSocketClose = null
     set({ ops, deployJobId, deploying: false })
+    get().resumePlanJob()
   },
 
   deploy() {
-    // TODO(M3/M4): POST /api/deploy with the current ops, then attachPlanSocket.
+    const { ops, deploying } = get()
+    if (deploying || ops.length === 0) return
+
+    const token = useAuthStore.getState().token
+
+    // Retry: reset previously failed/cancelled ops back to staged so a retry
+    // resends them alongside whatever hadn't run yet.
+    const resettable = ops.map((op) =>
+      op.status === OP_STATUS.error || op.status === OP_STATUS.cancelled
+        ? { ...op, status: OP_STATUS.staged, progress: undefined, detail: undefined }
+        : op,
+    )
+
+    const payload: PlanOpPayload[] = resettable.map((op) => ({
+      id: op.id,
+      kind: op.kind,
+      target: op.targetNodeId,
+      params: buildOpParams(op, token),
+      dependsOn: op.dependsOn,
+    }))
+
+    set({ ops: resettable.map((op) => ({ ...op, status: OP_STATUS.pending })) })
+
+    deployPlan(payload)
+      .then(({ job_id }) => {
+        set({ deployJobId: job_id, deploying: true })
+        attachPlanSocket(job_id, token)
+      })
+      .catch((err) => {
+        set((s) => ({ ops: s.ops.map((op) => ({ ...op, status: OP_STATUS.staged })) }))
+        toast.error(err instanceof Error ? err.message : "Failed to start deploy.")
+      })
   },
 
   resumePlanJob() {
-    // TODO(M4): if deployJobId is set, re-attach its plan socket.
+    const { deployJobId, deploying } = get()
+    if (!deployJobId || deploying) return
+    const token = useAuthStore.getState().token
+    // Without a live token the socket can't authenticate — leave the job id
+    // in place so a later resume (once the session is ready) can pick it up.
+    if (!token) return
+    set({ deploying: true })
+    attachPlanSocket(deployJobId, token)
   },
 }))
 

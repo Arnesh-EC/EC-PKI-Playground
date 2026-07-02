@@ -28,6 +28,7 @@ export const URLS = {
     powerOn: (name: string) => `/vm/${encodeURIComponent(name)}/power-on`,
     powerOff: (name: string) => `/vm/${encodeURIComponent(name)}/power-off`,
   },
+  deploy: "/deploy",
   // WebSocket paths (relative to API_BASE, like the entries above). The ws
   // client resolves these against the current origin so the Vite proxy forwards
   // the upgrade in dev.

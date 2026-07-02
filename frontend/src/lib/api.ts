@@ -176,3 +176,25 @@ export const cloneVm = (req: CloneRequest) =>
     method: "POST",
     body: JSON.stringify(req),
   })
+
+// --- /deploy -----------------------------------------------------------------
+
+/** Mirrors the backend's `PlanOp` (app/routers/deploy.py) — one node in the deploy DAG. */
+export interface PlanOpPayload {
+  id: string
+  kind: string
+  target: string
+  params: Record<string, string>
+  dependsOn: string[]
+}
+
+/** Deploy is async, same shape as clone: the POST returns a job id; progress streams over the job WS. */
+export interface DeployAccepted {
+  job_id: string
+}
+
+export const deployPlan = (ops: PlanOpPayload[]) =>
+  request<DeployAccepted>(URLS.deploy, {
+    method: "POST",
+    body: JSON.stringify({ ops }),
+  })

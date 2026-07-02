@@ -32,6 +32,14 @@ export function isDrifted(data: MachineData): boolean {
   return false
 }
 
+/** Config keys that differ between the current config and what was last deployed. Empty when not drifted. */
+export function driftedFields(data: MachineData): string[] {
+  if (!isDrifted(data) || !data.config) return []
+  const last = data.lastDeployedConfig ?? {}
+  const keys = new Set([...Object.keys(data.config), ...Object.keys(last)])
+  return [...keys].filter((key) => data.config![key] !== last[key])
+}
+
 /** Has a concrete identity on the canvas beyond a bare, unstaged draft. */
 export function isRealized(data: MachineData): boolean {
   return (

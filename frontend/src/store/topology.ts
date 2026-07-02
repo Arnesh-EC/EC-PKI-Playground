@@ -180,6 +180,8 @@ interface TopologyState {
   removeEdge: (id: string) => void
   /** Re-adds a previously-removed edge verbatim — used by `domainLeave` undo to restore the exact membership edge it replaced. */
   restoreEdge: (edge: Edge) => void
+  /** Clears an edge's ghost styling once its staged op has deployed successfully. */
+  commitEdge: (edgeId: string) => void
   selectNode: (id: string | null) => void
   setViewport: (viewport: Viewport) => void
   setOverlapNode: (id: string | null) => void
@@ -239,6 +241,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
   },
 
   connect(connection) {
+    if (useStagingStore.getState().deploying) return "Canvas is locked while deploying."
     const { nodes, edges } = get()
     const { source, target, sourceHandle, targetHandle } = connection
     const result = canConnect(source, target, nodes, edges)
@@ -247,9 +250,8 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
     const sourceNode = nodes.find((n) => n.id === source)!
     const targetNode = nodes.find((n) => n.id === target)!
     const type = inferEdgeType(sourceNode.data.typeId, targetNode.data.typeId)
-    const style = edgeStyle(type, {
-      rootIssuer: sourceNode.data.config?.caType === "Root",
-    })
+    const rootIssuer = sourceNode.data.config?.caType === "Root"
+    const style = edgeStyle(type, { rootIssuer })
 
     const edgeId = `e-${source}-${target}`
     const newEdge: Edge = {
@@ -262,7 +264,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
       // and other edges keep the existing orthogonal routing.
       type: type === EDGE_TYPE.webServerCert ? "default" : "smoothstep",
       markerEnd: { type: "arrowclosed" as const },
-      data: { edgeType: type, staged: true },
+      data: { edgeType: type, staged: true, rootIssuer },
       ...style,
       // Ghost styling until this op is deployed — commitEdge (M4) clears it.
       style: { ...style.style, strokeDasharray: "6 4", opacity: 0.6 },
@@ -330,6 +332,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
 
   applyDomainChanges(changes) {
     if (changes.length === 0) return
+    if (useStagingStore.getState().deploying) return
     for (const c of changes) {
       // Capture what's being replaced before mutating — `domainLeave`'s
       // undo needs the DC it left to re-add the exact same edge.
@@ -373,6 +376,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
   },
 
   configureNode(id, config) {
+    if (useStagingStore.getState().deploying) return
     // Patch one node's data; merges so callers set just the fields they touch.
     const patch = (data: Partial<MachineData>) =>
       set((s) => ({
@@ -467,6 +471,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
   },
 
   removeNode(id) {
+    if (useStagingStore.getState().deploying) return
     activeSockets.get(id)?.()
     activeSockets.delete(id)
     // Deleting the node makes any staged op referencing it meaningless —
@@ -490,6 +495,18 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
 
   restoreEdge(edge) {
     set((s) => ({ edges: [...s.edges, edge] }))
+  },
+
+  commitEdge(edgeId) {
+    set((s) => ({
+      edges: s.edges.map((e) => {
+        if (e.id !== edgeId) return e
+        const edgeType = e.data?.edgeType as ReturnType<typeof inferEdgeType> | undefined
+        if (!edgeType) return { ...e, data: { ...e.data, staged: false } }
+        const clean = edgeStyle(edgeType, { rootIssuer: e.data?.rootIssuer as boolean | undefined })
+        return { ...e, ...clean, data: { ...e.data, staged: false } }
+      }),
+    }))
   },
 
   selectNode(id) {

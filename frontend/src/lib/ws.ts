@@ -36,7 +36,28 @@ export interface ErrorEvent {
   detail: string
 }
 
-export type JobMessage = QueuedEvent | RunningEvent | ProgressEvent | DoneEvent | ErrorEvent
+/** Current run state of one op within a deploy plan — mirrors the backend's `OpRunState`. */
+export interface OpRunState {
+  status: "pending" | "running" | "done" | "error" | "cancelled"
+  percent?: number
+  phase?: string
+  detail?: string
+  result?: Record<string, unknown>
+}
+
+/** Full snapshot of every op's state in a deploy plan, published whole on every transition. */
+export interface PlanStateEvent {
+  type: "plan-state"
+  ops: Record<string, OpRunState>
+}
+
+export type JobMessage =
+  | QueuedEvent
+  | RunningEvent
+  | ProgressEvent
+  | PlanStateEvent
+  | DoneEvent
+  | ErrorEvent
 
 export interface JobSocketHandlers {
   /** Job accepted but waiting on the worker pool's concurrency cap. */
@@ -44,6 +65,8 @@ export interface JobSocketHandlers {
   /** Job picked up by a worker; work is about to start. */
   onRunning?: (event: RunningEvent) => void
   onProgress?: (event: ProgressEvent) => void
+  /** Full deploy-plan op snapshot — non-terminal, arrives once per op transition. */
+  onPlanState?: (event: PlanStateEvent) => void
   onDone?: (event: DoneEvent) => void
   /** Backend `error` frame, or a transport failure (status 0). */
   onError?: (event: ErrorEvent) => void
@@ -83,6 +106,9 @@ export function openJobSocket(
         break
       case "progress":
         handlers.onProgress?.(msg)
+        break
+      case "plan-state":
+        handlers.onPlanState?.(msg)
         break
       case "done":
         settled = true
