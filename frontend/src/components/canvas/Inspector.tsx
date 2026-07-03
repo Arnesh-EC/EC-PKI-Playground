@@ -20,8 +20,12 @@ import { OP_KIND, OP_STATUS } from "@/lib/staging"
 import type { StagedOp } from "@/lib/staging"
 import { useTopologyStore } from "@/store/topology"
 import { opsReferencingNode, useStagingStore } from "@/store/staging"
+import { useAuthStore } from "@/store/auth"
 import { CAPABILITIES } from "@/constants/auth"
 import { useCan } from "@/hooks/useCan"
+import { useAgentConnected } from "@/hooks/useAgentConnected"
+import { dispatchOrchestratorCommand } from "@/lib/api"
+import { openJobSocket } from "@/lib/ws"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -151,6 +155,116 @@ function ConfigForm({
   )
 }
 
+/**
+ * Manual agent correlation + one live, real orchestrator action.
+ *
+ * There is no automatic VM<->agent correlation yet (see `MachineData.
+ * orchestratorVmId`'s doc comment) — a human pastes in the vm_id a
+ * `POST /orchestrator/register` call returned. `cert.verify` is wired end
+ * to end (dispatch -> job socket -> result) as the guest-eligible,
+ * lowest-risk proof that the whole phone-home path works from this UI; the
+ * AD DS/ADCS `PlannedAction` stubs above are untouched since no command
+ * backs them yet.
+ */
+function OrchestratorPanel({
+  nodeId,
+  vmId,
+  canVerifyCert,
+}: {
+  nodeId: string
+  vmId: string | undefined
+  canVerifyCert: boolean
+}) {
+  const store = useTopologyStore()
+  const [draftVmId, setDraftVmId] = useState(vmId ?? "")
+  const [path, setPath] = useState("")
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const connected = useAgentConnected(vmId)
+
+  function saveVmId() {
+    const trimmed = draftVmId.trim()
+    store.patchNodeData(nodeId, { orchestratorVmId: trimmed || undefined })
+  }
+
+  function verifyCert() {
+    if (!vmId) return
+    setRunning(true)
+    setResult(null)
+    dispatchOrchestratorCommand(vmId, "cert.verify", { path })
+      .then(({ job_id }) => {
+        const token = useAuthStore.getState().token
+        const close = openJobSocket(job_id, token, {
+          onDone: (e) => {
+            setRunning(false)
+            setResult(JSON.stringify(e.result))
+            close()
+          },
+          onError: (e) => {
+            setRunning(false)
+            setResult(`Error: ${e.detail}`)
+            close()
+          },
+        })
+      })
+      .catch((err) => {
+        setRunning(false)
+        setResult(err instanceof Error ? err.message : "Failed to dispatch command.")
+      })
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-1">
+        <Input
+          value={draftVmId}
+          onChange={(e) => setDraftVmId(e.target.value)}
+          placeholder="agent vm_id"
+          className="h-7 text-xs"
+        />
+        <Button size="sm" className="h-7 px-2 text-xs" onClick={saveVmId}>
+          Set
+        </Button>
+      </div>
+      {vmId && (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              connected ? "bg-emerald-500" : "bg-muted-foreground/40",
+            )}
+          />
+          Agent: {connected ? "Connected" : "Not connected"}
+        </div>
+      )}
+      {canVerifyCert && (
+        <div className="flex flex-col gap-1.5">
+          <Input
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder="cert path, e.g. C:\win11.cer"
+            className="h-7 text-xs"
+            disabled={!connected || running}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full justify-start gap-2"
+            disabled={!connected || !path || running}
+            onClick={verifyCert}
+          >
+            <ShieldCheck className="h-3.5 w-3.5" />
+            {running ? "Verifying…" : "Verify Certificate"}
+          </Button>
+          {result && (
+            <p className="text-[11px] text-muted-foreground break-all">{result}</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function Inspector() {
   const selectedId = useTopologyStore((s) => s.selectedNodeId)
   const store = useTopologyStore()
@@ -164,6 +278,7 @@ export function Inspector() {
 
   const canPower = useCan(CAPABILITIES.vmPower)
   const canUpdate = useCan(CAPABILITIES.vmUpdate)
+  const canVerifyCert = useCan(CAPABILITIES.vmRead)
   const deploying = useStagingStore((s) => s.deploying)
   const ops = useStagingStore((s) => s.ops)
   const retryDeploy = useStagingStore((s) => s.deploy)
@@ -532,6 +647,20 @@ export function Inspector() {
                   )}
               </>
             </div>
+          </section>
+        )}
+
+        {/* Orchestrator phone-home: manual agent correlation + cert.verify */}
+        {isConfigured && !reconfiguring && (
+          <section className="flex flex-col gap-2 border-t pt-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Orchestrator
+            </p>
+            <OrchestratorPanel
+              nodeId={nodeId}
+              vmId={data.orchestratorVmId}
+              canVerifyCert={canVerifyCert}
+            />
           </section>
         )}
 
