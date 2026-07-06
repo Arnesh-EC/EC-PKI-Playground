@@ -26,8 +26,8 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from pyVim.connect import Disconnect
-from vmkit import clone_workflow, open_connection
-from vmkit.errors import VmExistsError, VmkitError
+from vmkit import clone_workflow, destroy_workflow, open_connection
+from vmkit.errors import VmExistsError, VmkitError, VmNotFoundError
 from vmkit.esxi import get_vm_by_name
 
 from app.celery_app import celery_app
@@ -105,6 +105,65 @@ def clone_vm_task(job_id: str, params: dict) -> None:
         result = clone_workflow(conn, progress=reducer, **params)
         transport.publish(
             job_id, DoneMsg(result=asdict(result)), status=JobStatus.done, terminal=True
+        )
+    except VmkitError as exc:
+        status, detail = map_vmkit_error(exc)
+        transport.publish(
+            job_id, ErrorMsg(status=status, detail=detail), status=JobStatus.error, terminal=True
+        )
+    except Exception as exc:  # noqa: BLE001 — surface anything as a terminal error
+        transport.publish(
+            job_id, ErrorMsg(status=500, detail=str(exc)), status=JobStatus.error, terminal=True
+        )
+
+
+@celery_app.task(name="destroy_vm")
+def destroy_vm_task(job_id: str, name: str) -> None:
+    """Tear down a VM: power off + destroy, reclaim its guest IP, mark the
+    registry entry deleted.
+
+    A VM already absent from inventory (``VmNotFoundError``) still converges
+    to success — the clone may have half-failed leaving only registry/IP
+    state, and that must be cleanable through the same teardown call. Any
+    other vmkit failure leaves the allocation in place (the VM still exists
+    and may be using the address).
+    """
+    from app.routers.vm import CloneProgressReducer
+
+    transport.publish(job_id, RunningMsg(), status=JobStatus.running)
+
+    try:
+        conn = _open_worker_connection()
+        try:
+            already_absent = False
+            try:
+                # Two ops: power off + destroy (the reducer only needs a total).
+                reducer = CloneProgressReducer(transport.make_publisher(job_id), 2)
+                destroy_workflow(conn, name=name, progress=reducer)
+            except VmNotFoundError:
+                already_absent = True
+        finally:
+            Disconnect(conn.si)
+
+        with worker_db() as db:
+            release_ip_sync(db, name)
+            db["vm_registry"].update_one(
+                {"vmName": name},
+                {
+                    "$set": {
+                        "status": "deleted",
+                        "powerState": None,
+                        "ip": None,
+                        "updatedAt": now_ms(),
+                    }
+                },
+            )
+
+        transport.publish(
+            job_id,
+            DoneMsg(result={"name": name, "alreadyAbsent": already_absent}),
+            status=JobStatus.done,
+            terminal=True,
         )
     except VmkitError as exc:
         status, detail = map_vmkit_error(exc)

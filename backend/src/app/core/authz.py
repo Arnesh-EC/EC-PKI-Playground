@@ -41,6 +41,7 @@ class Capability(str, Enum):
     VM_CLONE = "vm:clone"
     VM_UPDATE = "vm:update"
     VM_POWER = "vm:power"
+    VM_DELETE = "vm:delete"
     CONFIG_GENERATE = "config:generate"
     VM_EXEC_ARBITRARY = "vm:exec-arbitrary"  # reserved — wired in by the orchestrator phase
     DEPLOY = "deploy"
@@ -61,6 +62,9 @@ class Capability(str, Enum):
 #   VM_EXEC_ARBITRARY is reserved for the firstboot orchestrator (future phase).
 #   DEPLOY is guest-eligible: the plan runner only does what a guest can already
 #     trigger directly (clones) plus simulated stub ops.
+#   VM_DELETE is guest-eligible: self-service teardown is the point (Phase G) —
+#     safety comes from ``enforce_guest_vm_ownership`` (a guest can only delete
+#     inside its own name namespace), not from withholding the capability.
 #   PROJECT_* / SETTINGS_* / REGISTRY_* (Mongo persistence) are operator-only:
 #     guests keep client-side (localStorage) persistence, so the shared guest
 #     deploy never exposes a cross-visitor project list.
@@ -71,6 +75,7 @@ ROLE_CAPABILITIES: dict[Role, set[Capability]] = {
         Capability.VM_LIST,
         Capability.VM_READ,
         Capability.VM_CLONE,
+        Capability.VM_DELETE,
         Capability.DEPLOY,
     },
 }
@@ -182,3 +187,18 @@ def enforce_guest_vm_name(name: str, user: AuthedUser) -> str:
     if not _GUEST_VM_SUFFIX.match(suffix):
         raise HTTPException(422, detail="Invalid VM name.")
     return f"{prefix}{suffix}"
+
+
+def enforce_guest_vm_ownership(name: str, user: AuthedUser) -> None:
+    """Refuse a guest operating on a VM outside its own namespace (403).
+
+    A *check*, never a rewrite — silently redirecting a destructive operation
+    (the way ``enforce_guest_vm_name`` redirects clone names) could aim it at
+    a different VM than the caller named. Operators pass unchecked.
+    """
+    if user.role != Role.GUEST:
+        return
+    if not name.startswith(_guest_namespace(user)):
+        raise HTTPException(
+            status_code=403, detail="Guests can only manage their own VMs."
+        )

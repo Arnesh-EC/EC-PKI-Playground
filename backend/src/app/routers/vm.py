@@ -26,6 +26,7 @@ from app.core.authz import (
     AuthedUser,
     Capability,
     enforce_guest_vm_name,
+    enforce_guest_vm_ownership,
     get_current_user,
     require_capability,
 )
@@ -199,6 +200,38 @@ def update_vm(
     """Reconfigure an existing VM's CPU/RAM/MAC/ISO; unspecified values are preserved."""
     result = update_workflow(conn, name=name, **req.model_dump())
     return asdict(result)
+
+
+@router.delete(
+    "/{name}",
+    status_code=202,
+    dependencies=[Depends(require_capability(Capability.VM_DELETE))],
+)
+async def delete_vm(
+    name: str,
+    user: AuthedUser = Depends(get_current_user),
+) -> dict:
+    """Enqueue a VM teardown (power off + destroy + reclaim its guest IP) as a
+    Celery job; stream progress over ws /api/ws/jobs/{job_id}.
+
+    Mirrors the clone route's 202 shape. Guests can only tear down VMs inside
+    their own ``guest-<slug>-`` namespace; a VM already absent from inventory
+    still converges to success in the worker (registry marked deleted, IP
+    reclaimed) so a half-failed clone is cleanable through the same call.
+    """
+    from app.tasks import destroy_vm_task  # local import: avoids loading Celery for every route
+
+    if await load_target() is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No shared ESXi target configured — an operator must set it via PUT /api/settings.",
+        )
+    enforce_guest_vm_ownership(name, user)
+
+    job_id = uuid.uuid4().hex
+    transport.publish(job_id, QueuedMsg(), status=JobStatus.queued)
+    destroy_vm_task.delay(job_id, name)
+    return {"job_id": job_id}
 
 
 @router.post(
