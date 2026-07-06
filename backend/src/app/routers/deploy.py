@@ -7,8 +7,10 @@ worker (``app.tasks.run_plan_task``), streaming per-op state over the existing
 ``/api/ws/jobs/{job_id}`` transport as one ``PlanStateMsg`` per transition.
 
 Vocabulary is exactly the five op kinds the frontend staging store can produce
-(see ``frontend/src/lib/staging.ts``). Only ``createVm`` ever touches a real VM;
-everything else is a simulated stub for now (see ``app.tasks._simulate_op``).
+(see ``frontend/src/lib/staging.ts``). Since Phase G every ``createVm`` is a
+real clone — the server decides, never a client flag — booted from a per-VM
+firstboot ISO carrying a pool-allocated guest IP; the other four kinds remain
+simulated stubs (see ``app.tasks._simulate_op``).
 """
 
 import uuid
@@ -24,7 +26,10 @@ from app.core.authz import (
     get_current_user,
     require_capability,
 )
-from app.core.esxi import load_target
+from app.core.db import SETTINGS_DOC_ID, settings_col
+from app.core.esxi import _target_from_doc
+from app.core.firstboot import TEMPLATE_IDS
+from app.core.ippool import guest_network_from_doc
 from app.core.jobs import transport
 from app.core.jobs.models import JobStatus, QueuedMsg
 
@@ -53,11 +58,20 @@ class DeployRequest(BaseModel):
     ops: list[PlanOp] = Field(min_length=1, max_length=50)
 
 
-def validate_plan(ops: list[PlanOp], user: AuthedUser, target_configured: bool) -> None:
+def validate_plan(
+    ops: list[PlanOp],
+    user: AuthedUser,
+    *,
+    target_configured: bool,
+    guest_network_configured: bool,
+) -> None:
     """Raise 422 on a malformed plan: duplicate ids, unknown/self deps, cycles,
-    or a non-simulated ``createVm`` missing the ``vmName`` param.
+    or a ``createVm`` missing its ``vmName``/``template`` params.
 
-    Also rewrites each non-simulated ``createVm``'s ``vmName`` in place via
+    Every ``createVm`` is a real clone (any client ``simulate`` param is
+    ignored — real-vs-stub is never client authority), so each one needs a
+    configured shared ESXi target *and* a configured guest IP range up front.
+    Also rewrites each ``createVm``'s ``vmName`` in place via
     ``enforce_guest_vm_name`` — a guest must not be able to name a real VM
     outside its own identity's namespace.
 
@@ -77,10 +91,15 @@ def validate_plan(ops: list[PlanOp], user: AuthedUser, target_configured: bool) 
             raise HTTPException(
                 422, detail=f"Op '{op.id}' depends on unknown op(s): {unknown}."
             )
-        if op.kind is PlanOpKind.create_vm and op.params.get("simulate") != "true":
+        if op.kind is PlanOpKind.create_vm:
             if not op.params.get("vmName"):
                 raise HTTPException(
                     422, detail=f"Op '{op.id}' (createVm) is missing the 'vmName' param."
+                )
+            if op.params.get("template") not in TEMPLATE_IDS:
+                raise HTTPException(
+                    422,
+                    detail=f"Op '{op.id}' (createVm) has a missing or unknown 'template' param.",
                 )
             # The worker opens its own ESXi connection against the shared
             # target from the settings document (see app.tasks) — without a
@@ -90,8 +109,17 @@ def validate_plan(ops: list[PlanOp], user: AuthedUser, target_configured: bool) 
                 raise HTTPException(
                     422,
                     detail=(
-                        f"Op '{op.id}' (createVm) requests a real clone, but no shared "
-                        "ESXi target is configured for this deploy — simulate it instead."
+                        f"Op '{op.id}' (createVm) needs a shared ESXi target, but none "
+                        "is configured — an operator must set it via PUT /api/settings."
+                    ),
+                )
+            # Same fail-early logic for the IP the clone's firstboot ISO bakes in.
+            if not guest_network_configured:
+                raise HTTPException(
+                    422,
+                    detail=(
+                        f"Op '{op.id}' (createVm) needs a guest IP range, but none is "
+                        "configured — an operator must set it via PUT /api/settings."
                     ),
                 )
             op.params["vmName"] = enforce_guest_vm_name(op.params["vmName"], user)
@@ -136,7 +164,13 @@ async def deploy(
     """
     from app.tasks import run_plan_task  # local import: avoids loading Celery for every route
 
-    validate_plan(req.ops, user, target_configured=await load_target() is not None)
+    doc = await settings_col().find_one({"_id": SETTINGS_DOC_ID})
+    validate_plan(
+        req.ops,
+        user,
+        target_configured=_target_from_doc(doc) is not None,
+        guest_network_configured=guest_network_from_doc(doc) is not None,
+    )
 
     job_id = uuid.uuid4().hex
     transport.publish(job_id, QueuedMsg(), status=JobStatus.queued)
