@@ -15,6 +15,13 @@ export const AUTH_MODES = {
 
 export type AuthMode = (typeof AUTH_MODES)[keyof typeof AUTH_MODES]
 
+export const ROLES = {
+  operator: "operator",
+  guest: "guest",
+} as const
+
+export type Role = (typeof ROLES)[keyof typeof ROLES]
+
 export const CAPABILITIES = {
   vmList: "vm:list",
   vmRead: "vm:read",
