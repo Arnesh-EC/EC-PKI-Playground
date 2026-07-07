@@ -95,7 +95,9 @@ interface StagingState {
  * Builds one op's wire params. `createVm` params are never persisted on the
  * op itself — `node.data.config` (the drift baseline) is the single source
  * of truth, so this reads it fresh at deploy time alongside the deploy-time
- * VM name and whether it's a real (`standalone`) or simulated clone.
+ * VM name and the template id. Every createVm is a real clone since Phase G
+ * — the backend allowlists `template` and decides for itself; there is no
+ * client `simulate` flag anymore.
  */
 function buildOpParams(op: StagedOp, token: string | null | undefined): Record<string, string> {
   if (op.kind !== OP_KIND.createVm) return op.params
@@ -103,7 +105,7 @@ function buildOpParams(op: StagedOp, token: string | null | undefined): Record<s
   return {
     ...(node?.data.config ?? {}),
     vmName: guestVmName(node?.data.name ?? op.targetNodeId, token),
-    simulate: node?.data.typeId === "standalone" ? "false" : "true",
+    template: node?.data.typeId ?? "",
   }
 }
 
