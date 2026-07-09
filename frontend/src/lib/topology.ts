@@ -6,7 +6,7 @@
 import type { Edge, Node } from "@xyflow/react"
 import { EDGE_TYPE, LIFECYCLE } from "@/constants/topology"
 import type { EdgeType } from "@/constants/topology"
-import type { MachineData } from "@/store/topology"
+import type { IsoAuthoring, MachineData } from "@/store/topology"
 
 // ---------------------------------------------------------------------------
 // Lifecycle derived state
@@ -17,27 +17,58 @@ export function isDeployed(data: MachineData): boolean {
   return data.lifecycle === LIFECYCLE.deployed || data.lifecycle === LIFECYCLE.drifted
 }
 
-/** Deployed with a config that no longer matches what was last deployed. */
-export function isDrifted(data: MachineData): boolean {
-  if (!isDeployed(data)) return false
-  if (!data.lastDeployedConfig) return data.config !== undefined
-  if (!data.config) return false
-  const keys = new Set([
-    ...Object.keys(data.config),
-    ...Object.keys(data.lastDeployedConfig),
-  ])
-  for (const key of keys) {
-    if (data.config[key] !== data.lastDeployedConfig[key]) return true
-  }
-  return false
+/**
+ * Canonical comparison key for a node's authored-ISO state. A disabled or
+ * absent panel collapses to "off" (nodes deployed before Phase E have neither
+ * field and never read as ISO-drifted); PACK compares the name-sorted file
+ * set, UPLOAD-ISO the uploaded file's identity.
+ */
+function isoSignature(iso: IsoAuthoring | undefined): string {
+  if (!iso?.enabled) return "off"
+  if (iso.mode === "uploadIso") return `iso:${iso.isoId ?? ""}`
+  return (
+    "pack:" +
+    JSON.stringify(
+      [...iso.files]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(({ name, content }) => [name, content]),
+    )
+  )
 }
 
-/** Config keys that differ between the current config and what was last deployed. Empty when not drifted. */
-export function driftedFields(data: MachineData): string[] {
-  if (!isDrifted(data) || !data.config) return []
-  const last = data.lastDeployedConfig ?? {}
+/** Deployed with an authored-ISO state that no longer matches what was last deployed. */
+export function isIsoDrifted(data: MachineData): boolean {
+  if (!isDeployed(data)) return false
+  return isoSignature(data.isoAuthoring) !== isoSignature(data.lastDeployedIso)
+}
+
+/** Synthetic `driftedFields` key for authored-ISO drift (not a config field). */
+export const ISO_DRIFT_FIELD = "isoContents"
+
+function configDriftedKeys(data: MachineData): string[] {
+  if (!data.config && !data.lastDeployedConfig) return []
+  if (!data.lastDeployedConfig) return data.config ? Object.keys(data.config) : []
+  if (!data.config) return []
+  const last = data.lastDeployedConfig
   const keys = new Set([...Object.keys(data.config), ...Object.keys(last)])
   return [...keys].filter((key) => data.config![key] !== last[key])
+}
+
+/** Deployed with config (or authored-ISO) state that no longer matches what was last deployed. */
+export function isDrifted(data: MachineData): boolean {
+  if (!isDeployed(data)) return false
+  if (isIsoDrifted(data)) return true
+  if (!data.lastDeployedConfig) return data.config !== undefined
+  if (!data.config) return false
+  return configDriftedKeys(data).length > 0
+}
+
+/** Config keys that differ since the last deploy, plus `ISO_DRIFT_FIELD` when the authored ISO changed. Empty when not drifted. */
+export function driftedFields(data: MachineData): string[] {
+  if (!isDrifted(data)) return []
+  const keys = data.config ? configDriftedKeys(data) : []
+  if (isIsoDrifted(data)) keys.push(ISO_DRIFT_FIELD)
+  return keys
 }
 
 /** Has a concrete identity on the canvas beyond a bare, unstaged draft. */

@@ -24,9 +24,10 @@ import { create } from "zustand"
 import { AUTO_NAME_PREFIX } from "@/constants/templates"
 import { EDGE_TYPE, LIFECYCLE } from "@/constants/topology"
 import type { Lifecycle } from "@/constants/topology"
+import type { IsoMode } from "@/constants/iso"
 import { toast } from "sonner"
 
-import { ApiError, deleteVm } from "@/lib/api"
+import { ApiError, deleteIso, deleteVm } from "@/lib/api"
 import { openJobSocket } from "@/lib/ws"
 import {
   canConnect,
@@ -45,6 +46,32 @@ import { opsReferencingNode, useStagingStore } from "@/store/staging"
 // Node data type
 // ---------------------------------------------------------------------------
 
+/** One authored firstboot script in the PACK panel. */
+export interface IsoFileEntry {
+  name: string
+  content: string
+}
+
+/**
+ * Operator-authored config-ISO state for one node (Phase E). When `enabled`,
+ * the deploy sends this instead of letting the server render the default
+ * hostname/network/role scripts — the panel IS the disc, and the VM gets no
+ * pool IP. `pack` carries editable text scripts inline; `uploadIso` references
+ * a pre-built ISO already uploaded to the backend (`POST /api/iso`).
+ * Mutations must stay immutable (fresh objects/arrays) — `lastDeployedIso`
+ * keeps the previous reference as its drift snapshot.
+ */
+export interface IsoAuthoring {
+  enabled: boolean
+  mode: IsoMode
+  files: IsoFileEntry[]
+  /** Set once so re-enabling the toggle never re-seeds over user deletions. */
+  seeded?: boolean
+  isoId?: string
+  isoName?: string
+  isoSize?: number
+}
+
 export interface MachineData extends Record<string, unknown> {
   typeId: string
   name: string
@@ -53,6 +80,10 @@ export interface MachineData extends Record<string, unknown> {
   /** Config as of the last successful deploy; compared against `config` to derive drift. */
   lastDeployedConfig?: Record<string, string>
   config?: Record<string, string>
+  /** Operator-authored config ISO (Phase E); read fresh at deploy time by `buildOpPayload`. */
+  isoAuthoring?: IsoAuthoring
+  /** ISO state as of the last successful deploy; compared against `isoAuthoring` to derive drift. */
+  lastDeployedIso?: IsoAuthoring
   /** 0–100 while `lifecycle === deploying`; drives the node's progress bar. */
   progress?: number
   /** Human label of the current configuration step (from the progress stream). */
@@ -174,6 +205,11 @@ function attachJobSocket(
 function removeNodeCore(id: string) {
   activeSockets.get(id)?.()
   activeSockets.delete(id)
+  // An uploaded-but-unconsumed ISO dies with its node — best-effort (a 404
+  // just means the worker or the orphan sweep already deleted it).
+  const isoId = useTopologyStore.getState().nodes.find((n) => n.id === id)
+    ?.data.isoAuthoring?.isoId
+  if (isoId) deleteIso(isoId).catch(() => {})
   // Deleting the node makes any staged op referencing it meaningless —
   // cascade-remove them so the Staged panel never lists a dangling op.
   const staging = useStagingStore.getState()
@@ -272,6 +308,13 @@ interface TopologyState {
    */
   resumeJobs: () => void
   renameNode: (id: string, name: string) => void
+  /**
+   * Merges a patch into one node's `isoAuthoring` (creating it with pack-mode
+   * defaults on first touch). Like `config`, this is read fresh at deploy time
+   * by the staging store, so edits on a `staged` node need no restage. Blocked
+   * while deploying, same as every other mutation.
+   */
+  setIsoAuthoring: (id: string, patch: Partial<IsoAuthoring>) => void
   /** Merges a partial data patch into one node — the seam the staging store's undo/cascade reverts go through. */
   patchNodeData: (id: string, data: Partial<MachineData>) => void
   removeNode: (id: string) => void
@@ -585,6 +628,34 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
       nodes: s.nodes.map((n) =>
         n.id === id ? { ...n, data: { ...n.data, name } } : n,
       ),
+    }))
+  },
+
+  setIsoAuthoring(id, patch) {
+    if (useStagingStore.getState().deploying) return
+    set((s) => ({
+      nodes: s.nodes.map((n) => {
+        if (n.id !== id) return n
+        const current: IsoAuthoring = n.data.isoAuthoring ?? {
+          enabled: false,
+          mode: "pack",
+          files: [],
+        }
+        // ISO edits on a deployed node mark it drifted, mirroring
+        // `configureNode`'s handling of config edits.
+        const wasDeployed =
+          n.data.lifecycle === LIFECYCLE.deployed || n.data.lifecycle === LIFECYCLE.drifted
+        // Fresh object every time — `lastDeployedIso` may hold the previous
+        // reference as its drift snapshot.
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            isoAuthoring: { ...current, ...patch },
+            ...(wasDeployed ? { lifecycle: LIFECYCLE.drifted } : {}),
+          },
+        }
+      }),
     }))
   },
 

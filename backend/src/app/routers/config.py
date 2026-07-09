@@ -32,6 +32,12 @@ class NetworkRequest(BaseModel):
     dns_suffix: str | None = None
 
 
+class PasswordRequest(BaseModel):
+    platform: str
+    username: str
+    password: str
+
+
 @router.post(
     "/hostname",
     response_class=PlainTextResponse,
@@ -61,5 +67,17 @@ def generate_network(req: NetworkRequest) -> str:
             dns_suffix=req.dns_suffix,
         )
         return configgen.render_network(req.platform, cfg)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post(
+    "/password",
+    response_class=PlainTextResponse,
+    dependencies=[Depends(require_capability(Capability.CONFIG_GENERATE))],
+)
+def generate_password(req: PasswordRequest) -> str:
+    try:
+        return configgen.render_password(req.platform, req.username, req.password)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

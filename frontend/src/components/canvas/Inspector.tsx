@@ -17,7 +17,7 @@ import { toast } from "sonner"
 import { TEMPLATE_BY_ID } from "@/constants/templates"
 import type { ConfigField } from "@/constants/templates"
 import { LIFECYCLE } from "@/constants/topology"
-import { caTier, caDepth, domainMembership, driftedFields, isDeployed, isDrifted } from "@/lib/topology"
+import { ISO_DRIFT_FIELD, caTier, caDepth, domainMembership, driftedFields, isDeployed, isDrifted } from "@/lib/topology"
 import { OP_KIND, OP_STATUS } from "@/lib/staging"
 import type { StagedOp } from "@/lib/staging"
 import { useTopologyStore } from "@/store/topology"
@@ -41,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { IsoAuthoringPanel } from "./IsoAuthoringPanel"
 import { StagedRemoveDialog } from "./StagedRemoveDialog"
 
 function PlannedAction({
@@ -633,6 +634,13 @@ export function Inspector() {
           </section>
         )}
 
+        {/* Operator-only ISO authoring (Phase E) — available while the node is
+            still configurable (draft/failed/reconfiguring) or staged (deploy
+            reads the panel fresh, so staged edits need no restage). */}
+        {isOperator && (showConfigForm || isStaged) && (
+          <IsoAuthoringPanel nodeId={nodeId} />
+        )}
+
         {/* Configuring spinner */}
         {isConfiguring && (
           <section className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -682,14 +690,21 @@ export function Inspector() {
           </section>
         )}
 
-        {/* Drifted — deployed, but the stored config no longer matches what was last deployed */}
-        {isDrifted(data) && data.config && (
+        {/* Drifted — deployed, but the stored config (or authored ISO) no longer matches what was last deployed */}
+        {isDrifted(data) && (
           <section className="flex flex-col gap-2">
             <div className="flex items-start gap-2 rounded-md border border-orange-500/30 bg-orange-500/5 p-2 text-xs text-orange-600">
               <RefreshCw className="mt-0.5 h-3 w-3 shrink-0" />
               <div className="flex flex-col gap-1">
                 <span>Configuration changed since last deploy.</span>
                 {driftedFields(data).map((key) => {
+                  if (key === ISO_DRIFT_FIELD) {
+                    return (
+                      <span key={key} className="text-[11px] text-muted-foreground">
+                        ISO contents changed
+                      </span>
+                    )
+                  }
                   const fieldLabel = def?.configFields?.find((f) => f.key === key)?.label ?? key
                   return (
                     <span key={key} className="text-[11px] text-muted-foreground">

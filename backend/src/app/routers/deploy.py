@@ -13,20 +13,24 @@ firstboot ISO carrying a pool-allocated guest IP; the other four kinds remain
 simulated stubs (see ``app.tasks._simulate_op``).
 """
 
+import re
 import uuid
 from enum import Enum
 
+from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.authz import (
+    ROLE_CAPABILITIES,
     AuthedUser,
     Capability,
     enforce_guest_vm_name,
     get_current_user,
     require_capability,
 )
-from app.core.db import SETTINGS_DOC_ID, settings_col
+from app.core.db import SETTINGS_DOC_ID, get_db, settings_col
 from app.core.esxi import _target_from_doc
 from app.core.firstboot import TEMPLATE_IDS
 from app.core.ippool import guest_network_from_doc
@@ -34,6 +38,17 @@ from app.core.jobs import transport
 from app.core.jobs.models import JobStatus, QueuedMsg
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
+
+# Authored-ISO caps (Phase E). Files ride inline in the deploy payload (and
+# through the Celery broker), so they are text-only and tightly bounded.
+ISO_MAX_FILES = 20
+ISO_FILE_MAX_BYTES = 256 * 1024
+ISO_OP_MAX_BYTES = 512 * 1024
+ISO_PLAN_MAX_BYTES = 2 * 1024 * 1024
+#: .ps1/.sh only for now: the deployed golden image's runner dispatches every
+#: manifest entry it can execute; .cmd/.bat wait on the v2 runner rollout
+#: (VM-Setup-Scripts) being promoted to the default base image.
+_ISO_FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(ps1|sh)$")
 
 
 class PlanOpKind(str, Enum):
@@ -44,6 +59,15 @@ class PlanOpKind(str, Enum):
     web_server_cert = "webServerCert"
 
 
+class IsoFile(BaseModel):
+    """One operator-authored firstboot script riding inline in a createVm op."""
+
+    name: str
+    # max_length counts characters; validate_plan re-checks encoded bytes for
+    # the per-op and per-plan sums.
+    content: str = Field(max_length=ISO_FILE_MAX_BYTES)
+
+
 class PlanOp(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -51,6 +75,7 @@ class PlanOp(BaseModel):
     kind: PlanOpKind
     target: str
     params: dict[str, str] = Field(default_factory=dict)
+    files: list[IsoFile] = Field(default_factory=list, max_length=ISO_MAX_FILES)
     depends_on: list[str] = Field(default_factory=list, alias="dependsOn")
 
 
@@ -66,12 +91,16 @@ def validate_plan(
     guest_network_configured: bool,
 ) -> None:
     """Raise 422 on a malformed plan: duplicate ids, unknown/self deps, cycles,
-    or a ``createVm`` missing its ``vmName``/``template`` params.
+    a ``createVm`` missing its ``vmName``/``template`` params, or invalid
+    authored-ISO content — and 403 when a role without ``ISO_AUTHOR`` submits
+    authored content at all.
 
     Every ``createVm`` is a real clone (any client ``simulate`` param is
     ignored — real-vs-stub is never client authority), so each one needs a
-    configured shared ESXi target *and* a configured guest IP range up front.
-    Also rewrites each ``createVm``'s ``vmName`` in place via
+    configured shared ESXi target up front. The guest IP range is only needed
+    on the default path: an authored op (inline ``files`` or an uploaded-ISO
+    ``isoId``) is the complete disc — the server injects nothing and claims no
+    pool address. Also rewrites each ``createVm``'s ``vmName`` in place via
     ``enforce_guest_vm_name`` — a guest must not be able to name a real VM
     outside its own identity's namespace.
 
@@ -83,6 +112,8 @@ def validate_plan(
         raise HTTPException(422, detail="Plan contains duplicate op ids.")
 
     id_set = set(ids)
+    plan_files_bytes = 0
+    seen_iso_ids: set[str] = set()
     for op in ops:
         if op.id in op.depends_on:
             raise HTTPException(422, detail=f"Op '{op.id}' depends on itself.")
@@ -91,38 +122,115 @@ def validate_plan(
             raise HTTPException(
                 422, detail=f"Op '{op.id}' depends on unknown op(s): {unknown}."
             )
-        if op.kind is PlanOpKind.create_vm:
-            if not op.params.get("vmName"):
-                raise HTTPException(
-                    422, detail=f"Op '{op.id}' (createVm) is missing the 'vmName' param."
-                )
-            if op.params.get("template") not in TEMPLATE_IDS:
+        if op.kind is not PlanOpKind.create_vm:
+            if op.files or op.params.get("isoId"):
                 raise HTTPException(
                     422,
-                    detail=f"Op '{op.id}' (createVm) has a missing or unknown 'template' param.",
+                    detail=f"Op '{op.id}': ISO content is only valid on createVm ops.",
                 )
-            # The worker opens its own ESXi connection against the shared
-            # target from the settings document (see app.tasks) — without a
-            # configured target a real clone can't run at all, so reject it
-            # here rather than letting the worker fail the op later.
-            if not target_configured:
+            continue
+
+        if not op.params.get("vmName"):
+            raise HTTPException(
+                422, detail=f"Op '{op.id}' (createVm) is missing the 'vmName' param."
+            )
+        if op.params.get("template") not in TEMPLATE_IDS:
+            raise HTTPException(
+                422,
+                detail=f"Op '{op.id}' (createVm) has a missing or unknown 'template' param.",
+            )
+
+        iso_id = op.params.get("isoId")
+        authored = bool(op.files) or bool(iso_id)
+        if authored:
+            # The hard Phase E gate: authored discs run arbitrary scripts as
+            # SYSTEM and bypass the pool — DEPLOY alone (guest-eligible) must
+            # never be enough to submit one.
+            if Capability.ISO_AUTHOR not in ROLE_CAPABILITIES[user.role]:
+                raise HTTPException(
+                    403,
+                    detail=(
+                        f"Role '{user.role.value}' does not have capability "
+                        f"'{Capability.ISO_AUTHOR.value}'."
+                    ),
+                )
+            if op.files and iso_id:
                 raise HTTPException(
                     422,
                     detail=(
-                        f"Op '{op.id}' (createVm) needs a shared ESXi target, but none "
-                        "is configured — an operator must set it via PUT /api/settings."
+                        f"Op '{op.id}' (createVm) carries both inline files and an "
+                        "uploaded ISO — pick one."
                     ),
                 )
-            # Same fail-early logic for the IP the clone's firstboot ISO bakes in.
-            if not guest_network_configured:
+            if iso_id and iso_id in seen_iso_ids:
                 raise HTTPException(
                     422,
                     detail=(
-                        f"Op '{op.id}' (createVm) needs a guest IP range, but none is "
-                        "configured — an operator must set it via PUT /api/settings."
+                        f"Op '{op.id}' (createVm) reuses an uploaded ISO already "
+                        "consumed by another op in this plan."
                     ),
                 )
-            op.params["vmName"] = enforce_guest_vm_name(op.params["vmName"], user)
+            if iso_id:
+                seen_iso_ids.add(iso_id)
+
+            op_bytes = 0
+            names: set[str] = set()
+            for file in op.files:
+                if not _ISO_FILE_NAME.match(file.name):
+                    raise HTTPException(
+                        422,
+                        detail=(
+                            f"Op '{op.id}': invalid script filename '{file.name}' "
+                            "(letters/digits/._- and a .ps1/.sh extension)."
+                        ),
+                    )
+                if file.name in names:
+                    raise HTTPException(
+                        422, detail=f"Op '{op.id}': duplicate script filename '{file.name}'."
+                    )
+                names.add(file.name)
+                op_bytes += len(file.content.encode("utf-8"))
+            if op_bytes > ISO_OP_MAX_BYTES:
+                raise HTTPException(
+                    422,
+                    detail=(
+                        f"Op '{op.id}': authored files exceed "
+                        f"{ISO_OP_MAX_BYTES // 1024} KiB total."
+                    ),
+                )
+            plan_files_bytes += op_bytes
+            if plan_files_bytes > ISO_PLAN_MAX_BYTES:
+                raise HTTPException(
+                    422,
+                    detail=(
+                        "Authored files across the plan exceed "
+                        f"{ISO_PLAN_MAX_BYTES // 1024} KiB total."
+                    ),
+                )
+
+        # The worker opens its own ESXi connection against the shared
+        # target from the settings document (see app.tasks) — without a
+        # configured target a real clone can't run at all, so reject it
+        # here rather than letting the worker fail the op later.
+        if not target_configured:
+            raise HTTPException(
+                422,
+                detail=(
+                    f"Op '{op.id}' (createVm) needs a shared ESXi target, but none "
+                    "is configured — an operator must set it via PUT /api/settings."
+                ),
+            )
+        # Same fail-early logic for the IP the clone's firstboot ISO bakes in —
+        # unless the op is authored, in which case no pool address is used.
+        if not authored and not guest_network_configured:
+            raise HTTPException(
+                422,
+                detail=(
+                    f"Op '{op.id}' (createVm) needs a guest IP range, but none is "
+                    "configured — an operator must set it via PUT /api/settings."
+                ),
+            )
+        op.params["vmName"] = enforce_guest_vm_name(op.params["vmName"], user)
 
     # Kahn's algorithm: a plan with a dependency cycle can never fully drain.
     indegree = {op.id: 0 for op in ops}
@@ -171,6 +279,28 @@ async def deploy(
         target_configured=_target_from_doc(doc) is not None,
         guest_network_configured=guest_network_from_doc(doc) is not None,
     )
+
+    # Uploaded ISOs must exist before the plan is enqueued — the worker can
+    # only turn a missing GridFS file into a late op error, so fail the whole
+    # request here while the client can still fix it.
+    for op in req.ops:
+        iso_id = op.params.get("isoId")
+        if not iso_id:
+            continue
+        try:
+            oid = ObjectId(iso_id)
+        except InvalidId:
+            raise HTTPException(
+                422, detail=f"Op '{op.id}': 'isoId' is not a valid ISO reference."
+            )
+        if await get_db()["isos.files"].find_one({"_id": oid}, {"_id": 1}) is None:
+            raise HTTPException(
+                422,
+                detail=(
+                    f"Op '{op.id}': uploaded ISO '{iso_id}' not found — it may have "
+                    "been consumed or expired; re-upload and retry."
+                ),
+            )
 
     job_id = uuid.uuid4().hex
     transport.publish(job_id, QueuedMsg(), status=JobStatus.queued)

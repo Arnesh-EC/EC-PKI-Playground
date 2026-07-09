@@ -43,6 +43,7 @@ class Capability(str, Enum):
     VM_POWER = "vm:power"
     VM_DELETE = "vm:delete"
     CONFIG_GENERATE = "config:generate"
+    ISO_AUTHOR = "iso:author"
     VM_EXEC_ARBITRARY = "vm:exec-arbitrary"  # reserved — wired in by the orchestrator phase
     DEPLOY = "deploy"
     PROJECT_READ = "project:read"
@@ -59,6 +60,10 @@ class Capability(str, Enum):
 # Guest    → read/guided VM subset only.
 #   CONFIG_GENERATE is operator-only: config is produced server-side on the
 #     guest's behalf (not via a guest-invoked endpoint).
+#   ISO_AUTHOR is operator-only (Phase E): authored/uploaded config ISOs run
+#     arbitrary scripts as SYSTEM on first boot and bypass the guest IP pool —
+#     never a shared-playground surface. Gates the /iso routes and any
+#     createVm op carrying authored content (checked in validate_plan).
 #   VM_EXEC_ARBITRARY is reserved for the firstboot orchestrator (future phase).
 #   DEPLOY is guest-eligible: the plan runner only does what a guest can already
 #     trigger directly (clones) plus simulated stub ops.

@@ -92,21 +92,61 @@ interface StagingState {
 }
 
 /**
- * Builds one op's wire params. `createVm` params are never persisted on the
- * op itself — `node.data.config` (the drift baseline) is the single source
- * of truth, so this reads it fresh at deploy time alongside the deploy-time
- * VM name and the template id. Every createVm is a real clone since Phase G
- * — the backend allowlists `template` and decides for itself; there is no
- * client `simulate` flag anymore.
+ * Builds one op's wire params (and, for authored createVm ops, the inline
+ * file list). `createVm` params are never persisted on the op itself —
+ * `node.data.config` / `node.data.isoAuthoring` (the drift baselines) are the
+ * single source of truth, so this reads them fresh at deploy time alongside
+ * the deploy-time VM name and the template id. Every createVm is a real clone
+ * since Phase G — the backend allowlists `template` and decides for itself;
+ * there is no client `simulate` flag anymore. An enabled ISO panel rides as
+ * either name-sorted inline `files` (PACK — matching the 10-/20-/30- manifest
+ * order convention) or an `isoId` param (UPLOAD-ISO); the backend then
+ * injects nothing and allocates no pool IP.
  */
-function buildOpParams(op: StagedOp, token: string | null | undefined): Record<string, string> {
-  if (op.kind !== OP_KIND.createVm) return op.params
+function buildOpPayload(
+  op: StagedOp,
+  token: string | null | undefined,
+): Pick<PlanOpPayload, "params" | "files"> {
+  if (op.kind !== OP_KIND.createVm) return { params: op.params }
   const node = useTopologyStore.getState().nodes.find((n) => n.id === op.targetNodeId)
-  return {
+  const params: Record<string, string> = {
     ...(node?.data.config ?? {}),
     vmName: guestVmName(node?.data.name ?? op.targetNodeId, token),
     template: node?.data.typeId ?? "",
   }
+
+  const iso = node?.data.isoAuthoring
+  if (!iso?.enabled) return { params }
+  if (iso.mode === "uploadIso" && iso.isoId) {
+    params.isoId = iso.isoId
+    return { params }
+  }
+  if (iso.mode === "pack" && iso.files.length > 0) {
+    const files = [...iso.files]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(({ name, content }) => ({ name, content }))
+    return { params, files }
+  }
+  return { params }
+}
+
+/**
+ * Nodes whose ISO panel is enabled but empty — deploying them would silently
+ * fall back to the default server-rendered disc, the one thing the toggle
+ * says won't happen. Deploy refuses until the panel has content or is off.
+ */
+function emptyIsoNodes(ops: StagedOp[]): string[] {
+  const nodes = useTopologyStore.getState().nodes
+  const names: string[] = []
+  for (const op of ops) {
+    if (op.kind !== OP_KIND.createVm) continue
+    const node = nodes.find((n) => n.id === op.targetNodeId)
+    const iso = node?.data.isoAuthoring
+    if (!iso?.enabled) continue
+    const empty = iso.mode === "pack" ? iso.files.length === 0 : !iso.isoId
+    if (empty) names.push(node?.data.name ?? op.targetNodeId)
+  }
+  return names
 }
 
 /** Folds one `plan-state` snapshot into the staging list and mirrors createVm/edge transitions onto the canvas. Idempotent — safe to apply the same snapshot more than once (reconnects/replays). */
@@ -138,6 +178,9 @@ function applyPlanState(opsState: Record<string, OpRunState>) {
           lifecycle: LIFECYCLE.deployed,
           poweredOn: true,
           lastDeployedConfig: node?.data.config,
+          // ISO drift baseline, mirroring lastDeployedConfig. Safe to hold by
+          // reference — setIsoAuthoring always builds a fresh object.
+          lastDeployedIso: node?.data.isoAuthoring,
           progress: 100,
           phase: undefined,
           // Conditional spreads so a result-less replay of an older snapshot
@@ -322,6 +365,18 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
     const { ops, deploying } = get()
     if (deploying || ops.length === 0) return
 
+    // Pre-flight: an enabled-but-empty ISO panel means the operator asked for
+    // an authored disc but hasn't provided one — refuse rather than silently
+    // deploying the default config.
+    const missingIso = emptyIsoNodes(ops)
+    if (missingIso.length > 0) {
+      toast.error(
+        `"${missingIso[0]}"${missingIso.length > 1 ? ` (+${missingIso.length - 1} more)` : ""}: ` +
+          "the ISO panel is enabled but empty — add scripts, upload an ISO, or turn it off.",
+      )
+      return
+    }
+
     // Set synchronously, before the POST even goes out — closes the window
     // between click and the 202 response where a second click could enqueue
     // a duplicate plan (double real clone → VmExists) and undo/stage/canvas
@@ -348,13 +403,17 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
       dependsOn: op.dependsOn.filter((dep) => keptIds.has(dep)),
     }))
 
-    const payload: PlanOpPayload[] = pruned.map((op) => ({
-      id: op.id,
-      kind: op.kind,
-      target: op.targetNodeId,
-      params: buildOpParams(op, token),
-      dependsOn: op.dependsOn,
-    }))
+    const payload: PlanOpPayload[] = pruned.map((op) => {
+      const { params, files } = buildOpPayload(op, token)
+      return {
+        id: op.id,
+        kind: op.kind,
+        target: op.targetNodeId,
+        params,
+        ...(files ? { files } : {}),
+        dependsOn: op.dependsOn,
+      }
+    })
 
     set({ ops: pruned.map((op) => ({ ...op, status: OP_STATUS.pending })) })
 

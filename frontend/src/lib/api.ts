@@ -171,6 +171,21 @@ export const generateNetwork = (req: NetworkRequest) =>
     true,
   )
 
+// --- /generate/password ------------------------------------------------------
+
+export interface PasswordRequest {
+  platform: Platform
+  username: string
+  password: string
+}
+
+export const generatePassword = (req: PasswordRequest) =>
+  request<string>(
+    URLS.generate.password,
+    { method: "POST", body: JSON.stringify(req) },
+    true,
+  )
+
 // --- async jobs --------------------------------------------------------------
 
 /** Every 202-and-stream route (clone, deploy, teardown, orchestrator dispatch)
@@ -209,12 +224,20 @@ export const deleteVm = (name: string) =>
 
 // --- /deploy -----------------------------------------------------------------
 
+/** One operator-authored firstboot script riding inline in a createVm op. */
+export interface IsoFilePayload {
+  name: string
+  content: string
+}
+
 /** Mirrors the backend's `PlanOp` (app/routers/deploy.py) — one node in the deploy DAG. */
 export interface PlanOpPayload {
   id: string
   kind: string
   target: string
   params: Record<string, string>
+  /** PACK-mode authored scripts (operator-only; validated server-side). */
+  files?: IsoFilePayload[]
   dependsOn: string[]
 }
 
@@ -223,6 +246,64 @@ export const deployPlan = (ops: PlanOpPayload[]) =>
     method: "POST",
     body: JSON.stringify({ ops }),
   })
+
+// --- /iso --------------------------------------------------------------------
+
+export interface UploadedIso {
+  isoId: string
+  name: string
+  size: number
+}
+
+/**
+ * Upload a pre-built config ISO (UPLOAD-ISO mode). Deliberately bypasses
+ * `request()`: multipart bodies must NOT carry a manual `content-type` header —
+ * the browser sets it (with the boundary) from the FormData. Token injection
+ * and the 401 auto-logout mirror `request()`.
+ */
+export async function uploadIso(file: File): Promise<UploadedIso> {
+  const token = useAuthStore.getState().token
+  const body = new FormData()
+  body.append("file", file)
+
+  const res = await fetch(`${API_BASE}${URLS.iso.upload}`, {
+    method: "POST",
+    headers: token ? { "x-session-token": token } : {},
+    body,
+  })
+
+  if (!res.ok) {
+    if (res.status === 401 && useAuthStore.getState().token) {
+      useAuthStore.getState().clear()
+    }
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const errBody = await res.json()
+      if (errBody?.detail) {
+        message =
+          typeof errBody.detail === "string"
+            ? errBody.detail
+            : JSON.stringify(errBody.detail)
+      }
+    } catch {
+      // non-JSON body — keep the status line.
+    }
+    throw new ApiError(res.status, message)
+  }
+  return res.json() as Promise<UploadedIso>
+}
+
+/** Best-effort — callers are expected to swallow 404s (already consumed/swept). */
+export const deleteIso = (isoId: string) =>
+  request<string>(URLS.iso.one(isoId), { method: "DELETE" }, true)
+
+export interface TemplateScripts {
+  scripts: IsoFilePayload[]
+}
+
+/** The template's fixed role scripts, as editable seed content for the PACK panel. */
+export const getTemplateScripts = (templateId: string) =>
+  request<TemplateScripts>(URLS.iso.templateScripts(templateId))
 
 // --- /projects ---------------------------------------------------------------
 

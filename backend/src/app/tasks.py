@@ -35,7 +35,7 @@ from app.core.db.models import now_ms
 from app.core.db.sync import worker_db
 from app.core.errors import map_vmkit_error
 from app.core.esxi import load_target_sync
-from app.core.firstboot import build_firstboot_iso
+from app.core.firstboot import build_authored_iso, build_firstboot_iso
 from app.core.ippool import (
     IpPoolExhaustedError,
     allocate_ip_sync,
@@ -210,42 +210,65 @@ def _registry_upsert_sync(db, vm_name: str, **fields) -> None:
 def _run_clone_op(
     conn: "Connection", db, op: "PlanOp", job_id: str, state: dict[str, OpRunState], push
 ) -> bool:
-    """Execute a ``createVm`` op for real: claim a guest IP, build the per-VM
-    firstboot ISO, clone (ISO attached, powered on), record the registry entry.
-    Returns False on failure — the claimed IP is released so a failed op never
-    strands an address."""
+    """Execute a ``createVm`` op for real, from one of three ISO sources:
+
+    - default (Phase G): claim a guest IP, render+pack the per-VM firstboot ISO;
+    - inline authored files (Phase E): pack exactly what the operator wrote;
+    - uploaded ISO (Phase E): fetch the GridFS file and attach it verbatim.
+
+    Authored/uploaded ops deliberately claim NO pool address and render nothing
+    — the authored content is the complete disc, so their op result carries no
+    ``ip``. Returns False on failure — a claimed IP is released so a failed op
+    never strands an address."""
+    from app.routers.iso import delete_uploaded_iso_sync, fetch_uploaded_iso_sync
     from app.routers.vm import CloneProgressReducer, CloneRequest, _clone_total_ops
 
     vm_name = op.params["vmName"]
+    iso_id = op.params.get("isoId")
+    authored = bool(op.files) or bool(iso_id)
     state[op.id] = OpRunState(status="running", percent=0.0, phase="Starting")
     push()
 
-    net = load_guest_network_sync(db)
-    if net is None:
-        # The route rejects plans without a configured range; hitting this
-        # means it was cleared between enqueue and execution.
-        state[op.id] = OpRunState(status="error", detail="Guest IP range is not configured.")
-        push()
-        return False
-    try:
-        ip = allocate_ip_sync(db, vm_name, job_id)
-    except IpPoolExhaustedError as exc:
-        state[op.id] = OpRunState(status="error", detail=str(exc))
-        push()
-        return False
+    ip: str | None = None
+    net = None
+    if not authored:
+        net = load_guest_network_sync(db)
+        if net is None:
+            # The route rejects plans without a configured range; hitting this
+            # means it was cleared between enqueue and execution.
+            state[op.id] = OpRunState(status="error", detail="Guest IP range is not configured.")
+            push()
+            return False
+        try:
+            ip = allocate_ip_sync(db, vm_name, job_id)
+        except IpPoolExhaustedError as exc:
+            state[op.id] = OpRunState(status="error", detail=str(exc))
+            push()
+            return False
 
     _registry_upsert_sync(
         db, vm_name, appName=op.target, status="cloning", jobId=job_id, ip=ip
     )
     try:
         with TemporaryDirectory() as tmp:
-            iso = build_firstboot_iso(
-                template=op.params["template"],
-                vm_name=vm_name,
-                ip=ip,
-                net=net,
-                dest_dir=Path(tmp),
-            )
+            if iso_id:
+                iso = fetch_uploaded_iso_sync(
+                    db, iso_id, Path(tmp) / f"{vm_name}-config.iso"
+                )
+            elif op.files:
+                iso = build_authored_iso(
+                    [(f.name, f.content) for f in op.files],
+                    vm_name=vm_name,
+                    dest_dir=Path(tmp),
+                )
+            else:
+                iso = build_firstboot_iso(
+                    template=op.params["template"],
+                    vm_name=vm_name,
+                    ip=ip,
+                    net=net,
+                    dest_dir=Path(tmp),
+                )
             req = CloneRequest(
                 name=vm_name,
                 iso_path=str(iso),
@@ -265,13 +288,18 @@ def _run_clone_op(
             moid=vm._moId if vm is not None else None,
             powerState="poweredOn",
         )
+        if iso_id:
+            # Consumed — vmkit uploaded it to the datastore; the GridFS copy
+            # has served its purpose (orphan sweep is the backstop).
+            delete_uploaded_iso_sync(db, iso_id)
         state[op.id] = OpRunState(
             status="done",
             percent=100.0,
             phase="Done",
             # ip/vmName ride the op result so the frontend can label the node
-            # and key teardown off the real inventory name.
-            result={**asdict(result), "ip": ip, "vmName": vm_name},
+            # and key teardown off the real inventory name. Authored clones
+            # have no pool ip to report.
+            result={**asdict(result), "vmName": vm_name, **({"ip": ip} if ip else {})},
         )
         push()
         return True
@@ -286,13 +314,15 @@ def _run_clone_op(
         return False
     except VmkitError as exc:
         status, detail = map_vmkit_error(exc)
-        release_ip_sync(db, vm_name)
+        if ip is not None:
+            release_ip_sync(db, vm_name)
         _registry_upsert_sync(db, vm_name, status="error", ip=None)
         state[op.id] = OpRunState(status="error", detail=f"{status}: {detail}")
         push()
         return False
     except Exception as exc:  # noqa: BLE001 — surface as an op-level failure, not a plan crash
-        release_ip_sync(db, vm_name)
+        if ip is not None:
+            release_ip_sync(db, vm_name)
         _registry_upsert_sync(db, vm_name, status="error", ip=None)
         state[op.id] = OpRunState(status="error", detail=str(exc))
         push()
@@ -352,6 +382,12 @@ def run_plan_task(job_id: str, plan: dict) -> None:
 
         try:
             with db_ctx as db:
+                if db is not None:
+                    # Lazy GC for abandoned ISO uploads (Phase E) — piggybacks
+                    # on plan runs instead of needing a scheduler.
+                    from app.routers.iso import gc_orphan_isos
+
+                    gc_orphan_isos(db)
                 while remaining:
                     for idx, op in enumerate(remaining):
                         if all(dep in finished for dep in op.depends_on):

@@ -13,6 +13,7 @@ export const URLS = {
   generate: {
     hostname: "/generate/hostname",
     network: "/generate/network",
+    password: "/generate/password",
   },
   auth: {
     login: "/auth/login",
@@ -32,6 +33,12 @@ export const URLS = {
     powerOff: (name: string) => `/vm/${encodeURIComponent(name)}/power-off`,
   },
   deploy: "/deploy",
+  iso: {
+    upload: "/iso",
+    one: (id: string) => `/iso/${encodeURIComponent(id)}`,
+    templateScripts: (templateId: string) =>
+      `/iso/templates/${encodeURIComponent(templateId)}/scripts`,
+  },
   projects: {
     list: "/projects",
     one: (id: string) => `/projects/${encodeURIComponent(id)}`,

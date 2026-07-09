@@ -12,8 +12,11 @@ Numbering fixes manifest (execution) order: ``10-`` hostname, ``20-`` network,
 ``30-`` role. Scripts never reboot — the firstboot runner in the base image
 owns the single reboot (established configgen convention).
 
-Deliberately reuses isokit's current firstboot-only packing unmodified; script
-*authoring* generalization is Phase E.
+Phase E adds ``build_authored_iso``: an operator-authored script set packed
+verbatim via isokit's v2 API — the server injects nothing (no hostname/network
+render, no role scripts, no pool IP). ``build_firstboot_iso`` (the guest/default
+path) deliberately stays on ``build_script_iso`` and its v1 manifest,
+byte-identical to Phase G.
 """
 
 import re
@@ -99,4 +102,29 @@ def build_firstboot_iso(
     isokit.build_script_iso(
         [hostname_script, network_script, *role_scripts_for(template)], iso_path
     )
+    return iso_path
+
+
+def build_authored_iso(
+    files: list[tuple[str, str]],
+    *,
+    vm_name: str,
+    dest_dir: Path,
+) -> Path:
+    """Pack operator-authored ``(name, content)`` scripts — exactly as received,
+    in the order received (the frontend sends them name-sorted, matching the
+    ``10-/20-/30-`` convention) — into ``dest_dir``; returns the ISO's path.
+
+    The authored set is the complete disc: nothing is rendered or appended
+    server-side. Names/sizes were validated in ``routers/deploy.py``; isokit
+    ``ValueError``s propagate as op-level failures.
+    """
+    script_paths: list[Path] = []
+    for name, content in files:
+        path = dest_dir / name
+        path.write_text(content, encoding="utf-8")
+        script_paths.append(path)
+
+    iso_path = dest_dir / f"{vm_name}-config.iso"
+    isokit.build_config_iso(iso_path, scripts=script_paths)
     return iso_path
