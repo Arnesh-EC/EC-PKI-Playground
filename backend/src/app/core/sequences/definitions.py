@@ -20,6 +20,7 @@ SECONDARY = "secondary"
 DC = "dc"
 ROOT = "root"
 WEB = "web"
+CA = "ca"
 
 # --------------------------------------------------------------------------- #
 # Relay scratch paths (fixed names on C:\Transfer\, the file.read/write        #
@@ -63,6 +64,13 @@ def _sanitized_cn_file(cn: str) -> str:
     with spaces (the exact sanitization is certutil's) — a Phase L canary; the
     lab's default CNs (``EC-Root-CA``) have none, so the root path is safe."""
     return cn
+
+
+def _crl_url_name(cn: str) -> str:
+    """The CN in an HTTP CRL URL — spaces percent-encoded (certutil publishes
+    `EncryptionConsulting%20Issuing%20CA.crl`), so the agent's URL validator
+    (which rejects raw spaces) accepts it. Canary alongside _sanitized_cn_file."""
+    return _sanitized_cn_file(cn).replace(" ", "%20")
 
 
 def _root_aia(pki_host: str) -> str:
@@ -300,6 +308,108 @@ def _domain_join_sequence(ctx: RunContext) -> list[Step]:
                 },
             )
         )
+
+    # Client enrollment rides the join (slice 12): once a client is in the
+    # domain and an issuing CA has published the Workstation template, enroll a
+    # cert, export it, and run the lab's own chain+revocation check — the Deploy
+    # ends at the verified chain. Gated on an issuing CA being present.
+    if ctx.node(PRIMARY).template_id == "client" and CA in ctx.nodes:
+        steps.append(
+            Step(
+                id="enroll-workstation",
+                command="cert.enroll",
+                target=PRIMARY,
+                params={
+                    "template": "Workstation",
+                    "exportPath": "C:\\win11.cer",
+                    "refreshPolicy": "true",
+                },
+                verify=Step(id="cert-verify", command="cert.verify", target=PRIMARY,
+                            params={"path": "C:\\win11.cer"}),
+                verify_predicate=lambda r: r.get("chain_ok") is True,
+                verify_window_s=900,
+            )
+        )
+    return steps
+
+
+def _web_server_cert_sequence(ctx: RunContext) -> list[Step]:
+    """Stand up the web host's HTTP CDP/AIA + Online Responder (webServerCert,
+    slice 12).
+
+    The IIS/vdir half of CertEnroll, then the Online Responder role, the OCSP
+    signing cert (auto-enrolled off the template caConnect published + granted),
+    the revocation configuration pointed at the issuing CA's CRLs (the CertAdm
+    COM canary), and a responder self-check. Finally the deferred ``pki`` CNAME
+    on the DC — created here (not in the DC's tail) because it only resolves
+    usefully once this web host exists.
+    """
+    ca = ctx.nodes.get(CA)
+    issuing_cn = ca.template_config.get("commonName", "Issuing CA") if ca else "Issuing CA"
+    ca_config = (
+        f"{ca.hostname}.{ctx.domain_name}\\{issuing_cn}"
+        if ca and ctx.domain_name
+        else ""
+    )
+    pki = ctx.pki_host or "pki.local"
+    refresh = ctx.node(PRIMARY).template_config.get("ocspRefreshMinutes", "15")
+
+    steps = [
+        Step(
+            id="iis-web",
+            command="iis.setup_certenroll",
+            target=PRIMARY,
+            params=lambda rt: {
+                "scope": "web",
+                "path": rt.node.template_config.get("certEnrollPath", "C:\\CertEnroll"),
+            },
+        ),
+        Step(id="ocsp-install", command="ocsp.install", target=PRIMARY, timeout_s=900),
+        Step(
+            id="enroll-ocsp",
+            command="cert.enroll",
+            target=PRIMARY,
+            params={
+                "template": "OCSPResponseSigning",
+                "refreshPolicy": "true",
+            },
+            verify_window_s=900,
+        ),
+        Step(
+            id="ocsp-config",
+            command="ocsp.configure_revocation",
+            target=PRIMARY,
+            params={
+                "name": "EC-Issuing-CA",
+                "caConfig": ca_config,
+                "template": "OCSPResponseSigning",
+                "refreshMinutes": refresh,
+                # The issuing CA's base + delta CRL over HTTP. The `%3%8%9.crl`
+                # publication expands to `<sanitized-CN>.crl` — CN-derived here;
+                # a Phase L canary for CNs with spaces (see _sanitized_cn_file).
+                "baseCrlUrls": f"http://{pki}/CertEnroll/{_crl_url_name(issuing_cn)}.crl",
+                "deltaCrlUrls": f"http://{pki}/CertEnroll/{_crl_url_name(issuing_cn)}+.crl",
+            },
+            verify=Step(id="ocsp-verify", command="ocsp.verify", target=PRIMARY),
+            verify_predicate=lambda r: r.get("configured") is True,
+            verify_window_s=600,
+        ),
+    ]
+
+    # The deferred pki CNAME → this web host, created on the DC.
+    if DC in ctx.nodes and ctx.domain_name:
+        steps.append(
+            Step(
+                id="pki-cname",
+                command="dns.create_record",
+                target=DC,
+                params=lambda rt: {
+                    "zone": ctx.domain_name or "",
+                    "name": "PKI",
+                    "target": f"{ctx.node(PRIMARY).hostname}.{ctx.domain_name}.",
+                },
+            )
+        )
     return steps
 
 
@@ -452,4 +562,6 @@ def op_sequence(op_kind: str, ctx: RunContext) -> list[Step]:
         return _domain_join_sequence(ctx)
     if op_kind == "caConnect":
         return _ca_connect_sequence(ctx)
+    if op_kind == "webServerCert":
+        return _web_server_cert_sequence(ctx)
     return []

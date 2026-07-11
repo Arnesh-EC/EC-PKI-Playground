@@ -34,6 +34,7 @@ SECONDARY = "secondary"
 DC = "dc"
 ROOT = "root"
 WEB = "web"
+CA = "ca"  # the forest's issuing (enterprise) CA
 
 
 class ContextError(Exception):
@@ -95,6 +96,21 @@ def _find_domain_controller(db, sibling_vm_name: str) -> NodeContext | None:
     return _find_by_template(db, sibling_vm_name, "domainController")
 
 
+def _find_issuing_ca(db, sibling_vm_name: str) -> NodeContext | None:
+    """The enterprise *issuing* CA sharing ``sibling_vm_name``'s namespace — the
+    node clients enroll against and the web host's OCSP responder points at.
+    Picks a certificateAuthority whose (decrypted) config is caType=Issuing."""
+    query = {"agent.templateId": "certificateAuthority", "status": {"$ne": "deleted"}}
+    prefix = _namespace_prefix(sibling_vm_name)
+    if prefix is not None:
+        query["vmName"] = {"$regex": f"^{prefix}"}
+    for doc in db["vm_registry"].find(query):
+        node = _resolve_node(db, doc["appName"])
+        if node.template_config.get("caType") == "Issuing":
+            return node
+    return None
+
+
 def build_run_context(db, op, all_ops) -> RunContext:
     """Resolve the :class:`RunContext` for a non-createVm ``op``.
 
@@ -127,6 +143,15 @@ def build_run_context(db, op, all_ops) -> RunContext:
     web_ctx = _find_by_template(db, nodes[PRIMARY].vm_name, "webServer")
     if web_ctx is not None:
         nodes[WEB] = web_ctx
+
+    # The issuing CA: the op's secondary when a web/client wires to it directly,
+    # else found by namespace (for the DNS CNAME / client-enrollment gate).
+    if secondary_ctx is not None and secondary_ctx.template_config.get("caType") == "Issuing":
+        nodes[CA] = secondary_ctx
+    else:
+        ca_ctx = _find_issuing_ca(db, nodes[PRIMARY].vm_name)
+        if ca_ctx is not None:
+            nodes[CA] = ca_ctx
 
     domain_name = dc_ctx.template_config.get("domainName") if dc_ctx else None
     netbios = dc_ctx.template_config.get("netbiosName") if dc_ctx else None
