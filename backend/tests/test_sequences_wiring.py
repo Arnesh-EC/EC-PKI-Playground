@@ -10,7 +10,9 @@ from app.core.sequences.model import NodeContext, RunContext, StepRuntime
 
 def test_certificate_authority_root_provisions_install_and_verify():
     steps = provision_steps("certificateAuthority", ca_type="Root")
-    assert [s.command for s in steps] == ["ca.install"]
+    # The root tail installs, configures, publishes, and relays (slice 11); the
+    # install step's readiness gate is ca.verify.
+    assert steps[0].command == "ca.install"
     assert steps[0].verify is not None
     assert steps[0].verify.command == "ca.verify"
 
@@ -21,7 +23,8 @@ def test_issuing_ca_has_no_first_boot_sequence():
 
 
 def test_templates_without_a_tail_provision_nothing():
-    for template in ("domainController", "webServer", "client", "standalone"):
+    # A member server / client / standalone does its work on join, not on boot.
+    for template in ("webServer", "client", "standalone"):
         assert provision_steps(template) == []
 
 

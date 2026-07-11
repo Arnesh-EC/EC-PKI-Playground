@@ -247,9 +247,22 @@ def _set_provision_state(db, vm_name: str, provision_state: str) -> None:
     )
 
 
+def _plan_domain_facts(ops: list["PlanOp"]) -> tuple[str | None, str | None]:
+    """The forest's (domainName, netbiosName) read from the plan's DC createVm
+    op — a constant decided up front, so the root CA's DSConfigDN / pki URLs
+    resolve even when the DC VM isn't up yet (they may clone in parallel)."""
+    from app.routers.deploy import PlanOpKind
+
+    for op in ops:
+        if op.kind is PlanOpKind.create_vm and op.params.get("template") == "domainController":
+            return op.params.get("domainName"), op.params.get("netbiosName")
+    return None, None
+
+
 def _provision_cloned_vm(
     conn_db,
     op: "PlanOp",
+    ops: list["PlanOp"],
     vm_id: str,
     ip: str | None,
     job_id: str,
@@ -294,7 +307,15 @@ def _provision_cloned_vm(
             template_id=template,
             template_config=extract_template_config(template, op.params),
         )
-        ctx = RunContext(nodes={"primary": node})
+        # Domain facts from the plan's DC op so the root CA's DSConfigDN / pki
+        # URLs resolve even when the DC VM isn't up yet.
+        domain_name, netbios = _plan_domain_facts(ops)
+        ctx = RunContext(
+            nodes={"primary": node},
+            domain_name=domain_name,
+            netbios=netbios,
+            pki_host=f"pki.{domain_name}" if domain_name else None,
+        )
         run_op_sequence(
             conn_db, steps, ctx, plan_job_id=job_id, op_id=op.id, role=owner_role
         )
@@ -313,6 +334,7 @@ def _run_clone_op(
     conn: "Connection",
     db,
     op: "PlanOp",
+    ops: list["PlanOp"],
     job_id: str,
     state: dict[str, OpRunState],
     push,
@@ -471,7 +493,7 @@ def _run_clone_op(
         # op (dependents cancel) but leaves the booted VM in place for teardown.
         if vm_id is not None:
             provisioned = _provision_cloned_vm(
-                db, op, vm_id, ip, job_id, owner_role, state, push
+                db, op, ops, vm_id, ip, job_id, owner_role, state, push
             )
             if not provisioned:
                 return False
@@ -698,7 +720,7 @@ def run_plan_task(job_id: str, plan: dict, owner_role: str = "guest") -> None:
                                 finished.add(op.id)
                                 blocked.add(op.id)
                                 continue
-                        ok = _run_clone_op(conn, db, op, job_id, state, push, owner_role)
+                        ok = _run_clone_op(conn, db, op, ops, job_id, state, push, owner_role)
                     else:
                         # Real command sequence where one exists (domainJoin,
                         # …); otherwise the timed stub. `None` = no sequence for

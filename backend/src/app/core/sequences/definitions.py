@@ -18,10 +18,93 @@ from app.core.sequences.model import RunContext, Step, StepRuntime
 PRIMARY = "primary"
 SECONDARY = "secondary"
 DC = "dc"
+ROOT = "root"
+WEB = "web"
+
+# --------------------------------------------------------------------------- #
+# Relay scratch paths (fixed names on C:\Transfer\, the file.read/write        #
+# allowlist) + the CertEnroll publication dir the CA writes cert/CRL into.     #
+# --------------------------------------------------------------------------- #
+_CERT_ENROLL_DIR = "C:\\Windows\\System32\\CertSrv\\CertEnroll"
+_ROOT_CRT = "C:\\Transfer\\root-ca.crt"
+_ROOT_CRL = "C:\\Transfer\\root-ca.crl"
+_CSR = "C:\\Transfer\\IssuingCA.req"
+_ISSUING_CRT = "C:\\Transfer\\IssuingCA.crt"
+#: The web host's served CertEnroll dir (the file.read/write allowlist entry).
+_WEB_CERTENROLL = "C:\\CertEnroll"
+
+# Artifact relay keys (plan_runs.artifacts).
+_A_ROOT_CRT = "root_crt"
+_A_ROOT_CRL = "root_crl"
+_A_ISSUING_CSR = "issuing_csr"
+_A_ISSUING_CRT = "issuing_crt"
 
 
 def _admin_username(netbios: str | None) -> str:
     return f"{netbios}\\Administrator" if netbios else "Administrator"
+
+
+def _forest_mode(forest_level: str | None) -> str:
+    """Map the template's forest-level label to the cmdlet's mode token. Only
+    Windows Server 2025 introduced a new functional level past WinThreshold
+    (2016), which covers 2016/2019/2022."""
+    return "Win2025" if forest_level and "2025" in forest_level else "WinThreshold"
+
+
+def _ds_config_dn(domain: str) -> str:
+    """`CN=Configuration,DC=EncryptionConsulting,DC=com` from the domain — the
+    lab's DSConfigDN string baked into issued certs."""
+    dc = ",".join(f"DC={part}" for part in domain.split(".") if part)
+    return f"CN=Configuration,{dc}"
+
+
+def _sanitized_cn_file(cn: str) -> str:
+    """certutil's CertEnroll file stem for a CA common name. UNVERIFIED for CNs
+    with spaces (the exact sanitization is certutil's) — a Phase L canary; the
+    lab's default CNs (``EC-Root-CA``) have none, so the root path is safe."""
+    return cn
+
+
+def _root_aia(pki_host: str) -> str:
+    return "\n".join(
+        [
+            f"1:{_CERT_ENROLL_DIR}\\%1_%3%4.crt",
+            "2:ldap:///CN=%7,CN=AIA,CN=Public Key Services,CN=Services,%6%11",
+            f"2:http://{pki_host}/CertEnroll/%1_%3%4.crt",
+        ]
+    )
+
+
+def _root_cdp(pki_host: str) -> str:
+    return "\n".join(
+        [
+            f"1:{_CERT_ENROLL_DIR}\\%3%8%9.crl",
+            "10:ldap:///CN=%7%8,CN=%2,CN=CDP,CN=Public Key Services,CN=Services,%6%10",
+            f"2:http://{pki_host}/CertEnroll/%3%8%9.crl",
+        ]
+    )
+
+
+def _issuing_aia(pki_host: str, ocsp_host: str) -> str:
+    return "\n".join(
+        [
+            f"1:{_CERT_ENROLL_DIR}\\%1_%3%4.crt",
+            "2:ldap:///CN=%7,CN=AIA,CN=Public Key Services,CN=Services,%6%11",
+            f"2:http://{pki_host}/CertEnroll/%1_%3%4.crt",
+            f"32:http://{ocsp_host}/ocsp",
+        ]
+    )
+
+
+def _issuing_cdp(pki_host: str, unc_host: str) -> str:
+    return "\n".join(
+        [
+            f"65:{_CERT_ENROLL_DIR}\\%3%8%9.crl",
+            "79:ldap:///CN=%7%8,CN=%2,CN=CDP,CN=Public Key Services,CN=Services,%6%10",
+            f"6:http://{pki_host}/CertEnroll/%3%8%9.crl",
+            f"65:\\\\{unc_host}\\CertEnroll\\%3%8%9.crl",
+        ]
+    )
 
 
 def _ca_verify_step() -> Step:
@@ -37,12 +120,42 @@ def _ca_install_params(rt: StepRuntime) -> dict[str, str]:
     return {k: v for k, v in cfg.items() if v not in (None, "")}
 
 
-def _certificate_authority_provision() -> list[Step]:
-    """Root CA (createVm tail). Slice 9 ports the pre-Phase-L behaviour —
-    ``ca.install`` under the plan — verified with ``ca.verify``. The issuing
-    CA's cross-sign tail is driven by the ``caConnect`` op, not here; the richer
-    root tail (settings / CDP-AIA / CRL / relay export) lands in slice 11.
+def _root_ca_provision() -> list[Step]:
+    """Offline root CA (createVm tail, slice 11): install the standalone root,
+    apply the lab's registry settings, set the 3-location root CDP/AIA arrays,
+    publish the first CRL, then read the root cert + CRL into the relay so the
+    caConnect handshake can carry them to CA02/SRV1/DC01. Domain facts
+    (DSConfigDN, the pki HTTP host) come from the plan's DC via the run context
+    — the root is offline but its issued-cert URLs still hard-code the domain.
     """
+
+    def settings_params(rt: StepRuntime) -> dict[str, str]:
+        params = {
+            "crlPeriodUnits": "52",
+            "crlPeriod": "Weeks",
+            "crlDeltaPeriodUnits": "0",
+            "crlOverlapUnits": "12",
+            "crlOverlapPeriod": "Hours",
+            "validityPeriodUnits": "10",
+            "validityPeriod": "Years",
+            "auditFilter": "127",
+        }
+        if rt.ctx.domain_name:
+            params["dsConfigDn"] = _ds_config_dn(rt.ctx.domain_name)
+        return params
+
+    def cdp_aia_params(rt: StepRuntime) -> dict[str, str]:
+        pki = rt.ctx.pki_host or "pki.local"
+        return {"aiaUrls": _root_aia(pki), "cdpUrls": _root_cdp(pki)}
+
+    def root_crt_path(rt: StepRuntime) -> dict[str, str]:
+        cn = rt.node.template_config.get("commonName", "EC-Root-CA")
+        return {"path": f"{_CERT_ENROLL_DIR}\\{rt.node.hostname}_{_sanitized_cn_file(cn)}.crt"}
+
+    def root_crl_path(rt: StepRuntime) -> dict[str, str]:
+        cn = rt.node.template_config.get("commonName", "EC-Root-CA")
+        return {"path": f"{_CERT_ENROLL_DIR}\\{_sanitized_cn_file(cn)}.crl"}
+
     return [
         Step(
             id="ca-install",
@@ -50,27 +163,75 @@ def _certificate_authority_provision() -> list[Step]:
             target=PRIMARY,
             params=_ca_install_params,
             verify=_ca_verify_step(),
-            verify_predicate=lambda r: r.get("caType") is not None,
+            verify_predicate=lambda r: r.get("ping_ok") is True,
             timeout_s=1800,
-        )
+        ),
+        Step(id="ca-settings", command="ca.configure_settings", target=PRIMARY, params=settings_params),
+        Step(id="ca-cdp-aia", command="ca.configure_cdp_aia", target=PRIMARY, params=cdp_aia_params),
+        Step(id="ca-crl", command="ca.publish_crl", target=PRIMARY),
+        Step(id="read-root-crt", command="file.read", target=PRIMARY, params=root_crt_path, produces=(_A_ROOT_CRT,)),
+        Step(id="read-root-crl", command="file.read", target=PRIMARY, params=root_crl_path, produces=(_A_ROOT_CRL,)),
+    ]
+
+
+def _domain_controller_provision() -> list[Step]:
+    """Domain controller (createVm tail, slice 11): promote a new forest
+    (``Install-ADDSForest -NoRebootOnCompletion``), reboot, verify ADWS is up,
+    then point the DC's own NIC DNS at itself. The `pki` CNAME is deferred to
+    the webServerCert op (it only resolves usefully once the web host exists)."""
+
+    def forest_params(rt: StepRuntime) -> dict[str, str]:
+        cfg = rt.node.template_config
+        return {
+            "domainName": cfg.get("domainName", ""),
+            "netbiosName": cfg.get("netbiosName", ""),
+            "forestMode": _forest_mode(cfg.get("forestLevel")),
+            "safeModePassword": cfg.get("domainAdminPassword", ""),
+        }
+
+    return [
+        Step(
+            id="install-forest",
+            command="dc.install_forest",
+            target=PRIMARY,
+            params=forest_params,
+            secret_keys=("safeModePassword",),
+            timeout_s=1800,
+        ),
+        Step(
+            id="reboot",
+            command="system.reboot",
+            target=PRIMARY,
+            expects_disconnect=True,
+            timeout_s=1200,
+            verify=Step(id="dc-verify", command="dc.verify", target=PRIMARY),
+            verify_predicate=lambda r: bool((r.get("domain") or {}).get("DNSRoot")),
+            verify_window_s=900,
+        ),
+        Step(
+            id="dns-self",
+            command="dns.set_client",
+            target=PRIMARY,
+            params=lambda rt: {"servers": rt.node.ip or "127.0.0.1"},
+        ),
     ]
 
 
 #: createVm provision tails by template id. A template absent here provisions
-#: nothing on first boot (its role is driven later by plan ops) — e.g. a domain
-#: controller is promoted by its forest tail (slice 11), a member server does
-#: its work on domain join (slice 10+).
+#: nothing on first boot (its role is driven later by plan ops) — a member
+#: server does its work on domain join (slice 10).
 _PROVISION_SEQUENCES = {
-    "certificateAuthority": _certificate_authority_provision,
+    "domainController": _domain_controller_provision,
+    "certificateAuthority": _root_ca_provision,
 }
 
 
 def provision_steps(template: str, *, ca_type: str | None = None) -> list[Step]:
     """The createVm provision tail for ``template`` (empty when there's none).
 
-    ``ca_type`` lets the caller skip provisioning an *issuing* CA on first boot
-    — an issuing CA can't stand up until the caConnect handshake, so its
-    createVm tail is empty and the work happens in that op (slice 11).
+    ``ca_type`` skips provisioning an *issuing* CA on first boot — it can't
+    stand up until the caConnect handshake, so its createVm tail is empty and
+    the work happens in that op.
     """
     if template == "certificateAuthority" and ca_type == "Issuing":
         return []
@@ -142,10 +303,153 @@ def _domain_join_sequence(ctx: RunContext) -> list[Step]:
     return steps
 
 
+def _web_fqdn(ctx: RunContext) -> str | None:
+    web = ctx.nodes.get(WEB)
+    if web is None or not ctx.domain_name:
+        return None
+    return f"{web.hostname}.{ctx.domain_name}"
+
+
+def _ca_connect_sequence(ctx: RunContext) -> list[Step]:
+    """The two-tier cross-sign handshake (caConnect, slice 11).
+
+    Carries the root cert/CRL (produced into the relay by the root CA's
+    createVm tail) to CA02 + AD + the web host, stands the issuing CA up on
+    CA02 under the domain-admin credential, relays its CSR out to the offline
+    root and the signed cert back, finishes CA02's config, and publishes the
+    OCSP + Workstation templates (granting the web host enroll rights). Every
+    cross-VM hop goes through the file.read/write relay — the sneakernet — so
+    no SMB path is needed for the handshake itself.
+
+    Requires the full topology: the ``root`` (secondary), ``dc`` and ``web``
+    nodes must resolve. Steps targeting the web/DC degrade out only where the
+    lab allows (they don't here — a UNC CDP and template grant genuinely need
+    those hosts), so a missing node raises and fails the op.
+    """
+    root = ctx.node(ROOT)
+    has_web = WEB in ctx.nodes
+    has_dc = DC in ctx.nodes
+    pki = ctx.pki_host or "pki.local"
+    web_fqdn = _web_fqdn(ctx)
+
+    def issuing_install_params(rt: StepRuntime) -> dict[str, str]:
+        cfg = dict(rt.node.template_config)
+        cfg["caType"] = "Issuing"
+        cfg["csrPath"] = _CSR
+        dc = ctx.nodes.get(DC)
+        cfg["username"] = _admin_username(ctx.netbios)
+        cfg["password"] = (dc.template_config.get("domainAdminPassword", "") if dc else "")
+        return {k: v for k, v in cfg.items() if v not in (None, "")}
+
+    def issuing_settings_params(rt: StepRuntime) -> dict[str, str]:
+        return {
+            "crlPeriodUnits": "1",
+            "crlPeriod": "Weeks",
+            "crlDeltaPeriodUnits": "1",
+            "crlDeltaPeriod": "Days",
+            "crlOverlapUnits": "12",
+            "crlOverlapPeriod": "Hours",
+            "validityPeriodUnits": "5",
+            "validityPeriod": "Years",
+            "auditFilter": "127",
+        }
+
+    def issuing_cdp_aia_params(rt: StepRuntime) -> dict[str, str]:
+        aia = _issuing_aia(pki, web_fqdn) if web_fqdn else _root_aia(pki)
+        cdp = _issuing_cdp(pki, web_fqdn) if web_fqdn else _root_cdp(pki)
+        return {"aiaUrls": aia, "cdpUrls": cdp}
+
+    def issuing_pub_crt_path(rt: StepRuntime) -> dict[str, str]:
+        cn = rt.node.template_config.get("commonName", "Issuing CA")
+        return {"path": f"{_CERT_ENROLL_DIR}\\{rt.node.hostname}_{_sanitized_cn_file(cn)}.crt"}
+
+    steps: list[Step] = []
+
+    # 1) Trust the offline root on CA02 (carried from the relay).
+    steps += [
+        Step(id="root-to-ca02", command="file.write", target=PRIMARY,
+             params={"path": _ROOT_CRT}, consumes=(_A_ROOT_CRT,)),
+        Step(id="addstore-root", command="cert.addstore", target=PRIMARY,
+             params={"store": "root", "path": _ROOT_CRT}),
+    ]
+
+    # 2) Publish the root cert + CRL into AD (on the DC, where LocalSystem is
+    #    directory-privileged).
+    if has_dc:
+        steps += [
+            Step(id="root-to-dc", command="file.write", target=DC,
+                 params={"path": _ROOT_CRT}, consumes=(_A_ROOT_CRT,)),
+            Step(id="dspublish-root", command="cert.dspublish", target=DC,
+                 params={"path": _ROOT_CRT, "attribute": "RootCA"}),
+            Step(id="rootcrl-to-dc", command="file.write", target=DC,
+                 params={"path": _ROOT_CRL}, consumes=(_A_ROOT_CRL,)),
+            Step(id="dspublish-rootcrl", command="cert.dspublish", target=DC,
+                 params=lambda rt: {"path": _ROOT_CRL, "attribute": root.hostname}),
+        ]
+
+    # 3) Copy the root cert to the web host's served CertEnroll (HTTP CDP/AIA).
+    if has_web:
+        steps.append(
+            Step(id="root-to-web", command="file.write", target=WEB,
+                 params={"path": f"{_WEB_CERTENROLL}\\root-ca.crt"}, consumes=(_A_ROOT_CRT,))
+        )
+
+    # 4) Stand up the issuing CA (Enterprise Admin via -Credential) and relay
+    #    its CSR out to the offline root, signed cert back.
+    steps += [
+        Step(id="install-issuing", command="ca.install", target=PRIMARY,
+             params=issuing_install_params, secret_keys=("password",), timeout_s=1800),
+        Step(id="read-csr", command="file.read", target=PRIMARY,
+             params={"path": _CSR}, produces=(_A_ISSUING_CSR,)),
+        Step(id="csr-to-root", command="file.write", target=ROOT,
+             params={"path": _CSR}, consumes=(_A_ISSUING_CSR,)),
+        Step(id="sign-csr", command="ca.sign_request", target=ROOT,
+             params={"csrPath": _CSR, "certPath": _ISSUING_CRT}),
+        Step(id="read-signed", command="file.read", target=ROOT,
+             params={"path": _ISSUING_CRT}, produces=(_A_ISSUING_CRT,)),
+        Step(id="signed-to-ca02", command="file.write", target=PRIMARY,
+             params={"path": _ISSUING_CRT}, consumes=(_A_ISSUING_CRT,)),
+        Step(id="install-issuing-cert", command="ca.install_cert", target=PRIMARY,
+             params={"certPath": _ISSUING_CRT},
+             verify=_ca_verify_step(), verify_predicate=lambda r: r.get("ping_ok") is True),
+    ]
+
+    # 5) Finish CA02 config + publish templates + grant the web host enroll.
+    steps += [
+        Step(id="issuing-settings", command="ca.configure_settings", target=PRIMARY,
+             params=issuing_settings_params),
+        Step(id="issuing-cdp-aia", command="ca.configure_cdp_aia", target=PRIMARY,
+             params=issuing_cdp_aia_params),
+        Step(id="issuing-crl", command="ca.publish_crl", target=PRIMARY),
+    ]
+    if has_web:
+        steps += [
+            Step(id="read-issuing-crt", command="file.read", target=PRIMARY,
+                 params=issuing_pub_crt_path, produces=("issuing_pub_crt",)),
+            Step(id="issuing-to-web", command="file.write", target=WEB,
+                 params={"path": f"{_WEB_CERTENROLL}\\issuing-ca.crt"}, consumes=("issuing_pub_crt",)),
+        ]
+    steps.append(
+        Step(id="publish-templates", command="ca.publish_template", target=PRIMARY,
+             params={"templates": "OCSPResponseSigning,Workstation"})
+    )
+    if has_web and has_dc:
+        steps.append(
+            Step(id="grant-ocsp", command="template.grant_access", target=DC,
+                 params=lambda rt: {
+                     "template": "OCSPResponseSigning",
+                     "computer": ctx.node(WEB).hostname,
+                 })
+        )
+    return steps
+
+
 def op_sequence(op_kind: str, ctx: RunContext) -> list[Step]:
-    """The step list for a non-createVm plan op. domainJoin is real (slice 10);
-    caConnect / webServerCert / domainLeave are layered in by slices 11–12 and
-    until then keep running the timed simulation stub in ``app.tasks``."""
+    """The step list for a non-createVm plan op. domainJoin (slice 10) and
+    caConnect (slice 11) are real; webServerCert lands in slice 12, and
+    domainLeave keeps the timed simulation stub in ``app.tasks``."""
     if op_kind == "domainJoin":
         return _domain_join_sequence(ctx)
+    if op_kind == "caConnect":
+        return _ca_connect_sequence(ctx)
     return []

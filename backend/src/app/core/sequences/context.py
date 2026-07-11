@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 PRIMARY = "primary"
 SECONDARY = "secondary"
 DC = "dc"
+ROOT = "root"
+WEB = "web"
 
 
 class ContextError(Exception):
@@ -66,22 +68,31 @@ def _resolve_node(db, node_id: str) -> NodeContext:
     )
 
 
-def _find_domain_controller(db, sibling_vm_name: str) -> NodeContext | None:
-    """The domain controller sharing ``sibling_vm_name``'s guest namespace, if
-    one is registered — the source of the domain facts + admin credential for
-    ops whose ``secondary`` isn't itself the DC (caConnect, webServerCert)."""
-    # guest names are `guest-<slug>-<name>`; the DC shares the `guest-<slug>-`
-    # prefix. A non-namespaced (operator) name has no prefix — fall back to any.
-    prefix = None
-    parts = sibling_vm_name.split("-")
+def _namespace_prefix(vm_name: str) -> str | None:
+    """The ``guest-<slug>-`` prefix a namespaced VM's siblings share, or None
+    for a non-namespaced (operator) name."""
+    parts = vm_name.split("-")
     if len(parts) >= 3 and parts[0] == "guest":
-        prefix = f"guest-{parts[1]}-"
+        return f"guest-{parts[1]}-"
+    return None
 
-    query = {"agent.templateId": "domainController", "status": {"$ne": "deleted"}}
+
+def _find_by_template(
+    db, sibling_vm_name: str, template_id: str
+) -> NodeContext | None:
+    """The node of ``template_id`` sharing ``sibling_vm_name``'s guest namespace,
+    if one is registered — how ops locate the forest's DC / web host / root CA
+    without the plan naming every node explicitly."""
+    query = {"agent.templateId": template_id, "status": {"$ne": "deleted"}}
+    prefix = _namespace_prefix(sibling_vm_name)
     if prefix is not None:
         query["vmName"] = {"$regex": f"^{prefix}"}
     doc = db["vm_registry"].find_one(query)
     return _resolve_node(db, doc["appName"]) if doc else None
+
+
+def _find_domain_controller(db, sibling_vm_name: str) -> NodeContext | None:
+    return _find_by_template(db, sibling_vm_name, "domainController")
 
 
 def build_run_context(db, op, all_ops) -> RunContext:
@@ -107,6 +118,15 @@ def build_run_context(db, op, all_ops) -> RunContext:
         dc_ctx = _find_domain_controller(db, nodes[PRIMARY].vm_name)
     if dc_ctx is not None:
         nodes[DC] = dc_ctx
+
+    # caConnect: the secondary is the parent (root) CA — also expose it as
+    # `root`. The issuing CA additionally publishes through the forest's web
+    # host, resolved by namespace.
+    if secondary_ctx is not None and secondary_ctx.template_id == "certificateAuthority":
+        nodes[ROOT] = secondary_ctx
+    web_ctx = _find_by_template(db, nodes[PRIMARY].vm_name, "webServer")
+    if web_ctx is not None:
+        nodes[WEB] = web_ctx
 
     domain_name = dc_ctx.template_config.get("domainName") if dc_ctx else None
     netbios = dc_ctx.template_config.get("netbiosName") if dc_ctx else None

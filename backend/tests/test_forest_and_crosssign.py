@@ -1,0 +1,184 @@
+"""Slice-11 sequences: DC forest tail, root CA tail, and the caConnect
+cross-sign handshake — shape + param resolution (pure)."""
+
+import os
+
+os.environ.setdefault("SESSION_SECRET", "test-session-secret")
+os.environ.setdefault("SETTINGS_ENC_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+
+from app.core.sequences.definitions import (  # noqa: E402
+    _ds_config_dn,
+    _forest_mode,
+    op_sequence,
+    provision_steps,
+)
+from app.core.sequences.model import NodeContext, RunContext  # noqa: E402
+
+
+def test_forest_mode_maps_levels():
+    assert _forest_mode("Windows Server 2016") == "WinThreshold"
+    assert _forest_mode("Windows Server 2022") == "WinThreshold"
+    assert _forest_mode("Windows Server 2025") == "Win2025"
+
+
+def test_ds_config_dn_from_domain():
+    assert _ds_config_dn("EncryptionConsulting.com") == (
+        "CN=Configuration,DC=EncryptionConsulting,DC=com"
+    )
+
+
+def test_dc_provision_promotes_reboots_and_points_dns_at_self():
+    steps = provision_steps("domainController")
+    assert [s.command for s in steps] == [
+        "dc.install_forest",
+        "system.reboot",
+        "dns.set_client",
+    ]
+    assert "safeModePassword" in steps[0].secret_keys
+    assert steps[1].expects_disconnect is True
+    assert steps[1].verify.command == "dc.verify"
+
+
+def test_dc_forest_params_map_config():
+    node = NodeContext(
+        node_id="dc", vm_name="guest-abc12-dc01", hostname="guest-abc12-dc01",
+        agent_vm_id="v", ip="192.168.1.90", template_id="domainController",
+        template_config={
+            "domainName": "EncryptionConsulting.com",
+            "netbiosName": "ENCRYPTIONCONSU",
+            "forestLevel": "Windows Server 2025",
+            "domainAdminPassword": "Str0ng-Lab-Pass!",
+        },
+    )
+    ctx = RunContext(nodes={"primary": node})
+    p = provision_steps("domainController")[0].resolve_params(ctx)
+    assert p["domainName"] == "EncryptionConsulting.com"
+    assert p["forestMode"] == "Win2025"
+    assert p["safeModePassword"] == "Str0ng-Lab-Pass!"
+    # dns.set_client points at the DC's own IP.
+    assert provision_steps("domainController")[2].resolve_params(ctx)["servers"] == "192.168.1.90"
+
+
+def _root_ctx():
+    node = NodeContext(
+        node_id="ca01", vm_name="guest-abc12-ca01", hostname="guest-abc12-ca01",
+        agent_vm_id="v", template_id="certificateAuthority",
+        template_config={"caType": "Root", "commonName": "EC-Root-CA"},
+    )
+    return RunContext(
+        nodes={"primary": node},
+        domain_name="EncryptionConsulting.com",
+        pki_host="pki.EncryptionConsulting.com",
+    )
+
+
+def test_root_ca_tail_full_sequence():
+    steps = provision_steps("certificateAuthority", ca_type="Root")
+    assert [s.command for s in steps] == [
+        "ca.install",
+        "ca.configure_settings",
+        "ca.configure_cdp_aia",
+        "ca.publish_crl",
+        "file.read",
+        "file.read",
+    ]
+    # The two reads publish the root cert + CRL into the relay.
+    assert steps[4].produces == ("root_crt",)
+    assert steps[5].produces == ("root_crl",)
+
+
+def test_root_ca_settings_include_dsconfigdn_and_periods():
+    ctx = _root_ctx()
+    settings = provision_steps("certificateAuthority", ca_type="Root")[1].resolve_params(ctx)
+    assert settings["dsConfigDn"] == "CN=Configuration,DC=EncryptionConsulting,DC=com"
+    assert settings["crlPeriodUnits"] == "52"
+    assert settings["validityPeriodUnits"] == "10"
+    assert settings["auditFilter"] == "127"
+
+
+def test_root_ca_cdp_aia_use_pki_host_and_three_locations():
+    ctx = _root_ctx()
+    p = provision_steps("certificateAuthority", ca_type="Root")[2].resolve_params(ctx)
+    assert p["aiaUrls"].count("\n") == 2  # 3 AIA locations
+    assert p["cdpUrls"].count("\n") == 2  # 3 CDP locations
+    assert "http://pki.EncryptionConsulting.com/CertEnroll/" in p["aiaUrls"]
+
+
+def test_root_crt_read_path_is_cn_derived():
+    ctx = _root_ctx()
+    read = provision_steps("certificateAuthority", ca_type="Root")[4]
+    path = read.resolve_params(ctx)["path"]
+    assert path.endswith("guest-abc12-ca01_EC-Root-CA.crt")
+
+
+def test_issuing_ca_has_no_createvm_tail():
+    assert provision_steps("certificateAuthority", ca_type="Issuing") == []
+
+
+def _full_lab_ctx():
+    def node(nid, vm, template, cfg=None):
+        return NodeContext(
+            node_id=nid, vm_name=vm, hostname=vm, agent_vm_id=f"v-{nid}",
+            ip="192.168.1.1", template_id=template, template_config=cfg or {},
+        )
+
+    dc = node("dc01", "guest-abc12-dc01", "domainController",
+              {"domainName": "EncryptionConsulting.com", "netbiosName": "ENCRYPTIONCONSU",
+               "domainAdminPassword": "Str0ng-Lab-Pass!"})
+    return RunContext(
+        nodes={
+            "primary": node("ca02", "guest-abc12-ca02", "certificateAuthority",
+                            {"caType": "Issuing", "commonName": "EncryptionConsulting Issuing CA"}),
+            "secondary": node("ca01", "guest-abc12-ca01", "certificateAuthority", {"caType": "Root"}),
+            "root": node("ca01", "guest-abc12-ca01", "certificateAuthority", {"caType": "Root"}),
+            "dc": dc,
+            "web": node("srv1", "guest-abc12-srv1", "webServer"),
+        },
+        domain_name="EncryptionConsulting.com",
+        netbios="ENCRYPTIONCONSU",
+        pki_host="pki.EncryptionConsulting.com",
+    )
+
+
+def test_caconnect_handshake_relays_root_csr_and_signed_cert():
+    ctx = _full_lab_ctx()
+    steps = op_sequence("caConnect", ctx)
+    commands = [s.command for s in steps]
+    # Root trusted on CA02, published to AD + web, issuing installed, CSR out /
+    # signed cert back, config + templates + grant.
+    assert "cert.addstore" in commands
+    assert commands.count("cert.dspublish") == 2  # root cert + root CRL
+    assert "ca.sign_request" in commands
+    assert "ca.install_cert" in commands
+    assert "ca.publish_template" in commands
+    assert "template.grant_access" in commands
+    # The CSR/signed-cert relay uses produce/consume artifacts.
+    produced = {a for s in steps for a in s.produces}
+    assert {"issuing_csr", "issuing_crt"} <= produced
+
+
+def test_caconnect_issuing_install_is_credentialed_and_secret():
+    ctx = _full_lab_ctx()
+    install = next(s for s in op_sequence("caConnect", ctx) if s.id == "install-issuing")
+    params = install.resolve_params(ctx)
+    assert params["caType"] == "Issuing"
+    assert params["username"] == "ENCRYPTIONCONSU\\Administrator"
+    assert params["password"] == "Str0ng-Lab-Pass!"
+    assert "password" in install.secret_keys
+
+
+def test_caconnect_grant_targets_the_web_computer_on_the_dc():
+    ctx = _full_lab_ctx()
+    grant = next(s for s in op_sequence("caConnect", ctx) if s.id == "grant-ocsp")
+    assert grant.target == "dc"
+    params = grant.resolve_params(ctx)
+    assert params["template"] == "OCSPResponseSigning"
+    assert params["computer"] == "guest-abc12-srv1"
+
+
+def test_caconnect_issuing_cdp_includes_unc_and_ocsp_when_web_present():
+    ctx = _full_lab_ctx()
+    cdp_aia = next(s for s in op_sequence("caConnect", ctx) if s.id == "issuing-cdp-aia")
+    p = cdp_aia.resolve_params(ctx)
+    assert "/ocsp" in p["aiaUrls"]  # 32: OCSP AIA entry
+    assert "\\\\guest-abc12-srv1.EncryptionConsulting.com\\CertEnroll\\" in p["cdpUrls"]
