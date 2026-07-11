@@ -69,6 +69,8 @@ _COMMAND_CAPABILITIES: dict[str, Capability] = {
     "file.write": Capability.VM_PROVISION,
     "iis.setup_certenroll": Capability.VM_PROVISION,
     "ocsp.install": Capability.VM_PROVISION,
+    "ocsp.configure_revocation": Capability.VM_PROVISION,
+    "ocsp.verify": Capability.VM_READ,
     "cert.enroll": Capability.VM_PROVISION,
     "dc.install_forest": Capability.VM_PROVISION,
     "dc.verify": Capability.VM_READ,
