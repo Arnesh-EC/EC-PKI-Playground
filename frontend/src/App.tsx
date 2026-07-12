@@ -34,8 +34,9 @@ function App() {
   const token = useAuthStore((s) => s.token)
   const sessionReady = !!token
 
-  // Once a session exists, load the active project's topology (or bootstrap a
-  // default one) and start the autosave bridge. Runs once per session.
+  // Once a session exists, re-open the previously active project (if any) and
+  // start the autosave bridge. Runs once per session. With no saved projects
+  // the workspace shows <ProjectLanding> instead of auto-opening a blank one.
   //
   // Operator roles carry the project:* capabilities → projects live on the
   // server (lib/projectSync.ts). Guests keep localStorage persistence.
@@ -51,7 +52,7 @@ function App() {
     didInitProjects.current = true
     initProjectAutosave()
     if (canProjects) void initServerProjects()
-    else useProjectsStore.getState().ensureDefaultProject()
+    else useProjectsStore.getState().restoreProjects()
   }, [sessionReady, me, canProjects])
 
   if (!token) return <LoginForm />

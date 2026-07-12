@@ -30,7 +30,7 @@ import {
 } from "@/lib/api"
 import { enableServerPersistence } from "@/lib/persistenceMode"
 import { deserializeProject, serializeProject } from "@/lib/projectSerialize"
-import { emptyProject, migrateNodeData, useProjectsStore } from "@/store/projects"
+import { migrateNodeData, useProjectsStore } from "@/store/projects"
 import type { Project } from "@/store/projects"
 import { useAuthStore } from "@/store/auth"
 
@@ -135,7 +135,10 @@ export async function initServerProjects(): Promise<void> {
         projects = local
         imported = true
       } else {
-        projects = [emptyProject("Project 1")]
+        // Nothing on the server and nothing to import → stay empty so the
+        // workspace lands on <ProjectLanding> rather than an auto-created
+        // blank project.
+        projects = []
       }
     }
 
@@ -143,7 +146,9 @@ export async function initServerProjects(): Promise<void> {
     const activeId =
       meta.activeProjectId && projects.some((p) => p.id === meta.activeProjectId)
         ? meta.activeProjectId
-        : projects.reduce((a, b) => (b.updatedAt > a.updatedAt ? b : a)).id
+        : projects.length > 0
+          ? projects.reduce((a, b) => (b.updatedAt > a.updatedAt ? b : a)).id
+          : null
     const nextNumber = meta.nextProjectNumber ?? inferNextProjectNumber(projects)
 
     // Seed baselines BEFORE hydrating/subscribing: server-fetched docs are in

@@ -128,10 +128,10 @@ interface ProjectsState {
   activeProjectId: string | null
   nextProjectNumber: number
 
-  ensureDefaultProject: () => void
+  restoreProjects: () => void
   hydrateFromServer: (
     projects: Project[],
-    activeProjectId: string,
+    activeProjectId: string | null,
     nextProjectNumber: number,
   ) => void
   addProject: () => void
@@ -159,18 +159,18 @@ export const useProjectsStore = create<ProjectsState>()(
       activeProjectId: null,
       nextProjectNumber: 1,
 
-      ensureDefaultProject() {
+      // Session entry point (guest mode): re-open the previously active project
+      // if one persisted. With no saved projects the store stays empty and
+      // `activeProjectId` null, so the workspace shows <ProjectLanding> — a
+      // fresh launch lands on "How do you wish to start?" rather than a blank
+      // auto-created project.
+      restoreProjects() {
         const { projects } = get()
-        if (projects.length > 0) {
-          const active =
-            projects.find((p) => p.id === get().activeProjectId) ?? projects[0]
-          activate(active)
-          if (!get().activeProjectId) set({ activeProjectId: projects[0].id })
-          return
-        }
-        const project = emptyProject("Project 1")
-        set({ projects: [project], activeProjectId: project.id, nextProjectNumber: 2 })
-        activate(project)
+        if (projects.length === 0) return
+        const active =
+          projects.find((p) => p.id === get().activeProjectId) ?? projects[0]
+        set({ activeProjectId: active.id })
+        activate(active)
       },
 
       // Server-mode entry point (lib/projectSync.ts): wholesale-replace the
