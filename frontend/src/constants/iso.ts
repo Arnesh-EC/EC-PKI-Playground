@@ -1,6 +1,6 @@
 /**
  * Authored config-ISO limits — frontend mirrors of the backend caps in
- * `routers/deploy.py` / `routers/iso.py` (Phase E). Client-side checks are a
+ * `routers/deploy.py` / `routers/iso.py`. Client-side checks are a
  * courtesy (early toasts instead of a 422 after Deploy); the backend re-checks
  * everything authoritatively.
  */

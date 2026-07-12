@@ -5,7 +5,7 @@ Two identity sources, both feeding the same auth check on ``ws /connect``:
 * **In-process pending** (``_pending``): a vm_id/token pair minted by
   ``POST /orchestrator/register`` for the manual/dev flow (a human pastes them
   into a local ``orchestrator.toml``). No persistence, lost on restart.
-* **Persisted** (Phase F): the Celery clone worker mints an identity and stores
+* **Persisted**: the Celery clone worker mints an identity and stores
   ``{vmId, tokenHash, …}`` on the VM's ``vm_registry`` document, so a
   real deployed agent authenticates against Mongo (``authenticate_persisted``).
   Only the sha256 of the token is stored — a Mongo dump can't impersonate an

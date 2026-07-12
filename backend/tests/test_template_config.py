@@ -1,5 +1,5 @@
-"""Domain-admin password: AD-complexity policy + at-rest encryption round-trip
-(Phase L slice 8). The policy mirrors ``frontend/src/lib/passwordPolicy.ts``.
+"""Domain-admin password: AD-complexity policy + at-rest encryption round-trip.
+The policy mirrors ``frontend/src/lib/passwordPolicy.ts``.
 """
 
 import os

@@ -1,9 +1,9 @@
 """VM registry — app-side VM identity ↔ real ESXi identity, plus a status cache.
 
-Minimal Phase A surface (list / upsert / delete): nothing consumes registry
+Minimal surface (list / upsert / delete): nothing consumes registry
 data yet. Entries are keyed by the real ESXi inventory name (``vmName``,
 unique index) — the natural stable identity; app names ("WS-1") repeat across
-projects. The deploy worker does not write here yet — see the Phase A+ marker
+projects. The deploy worker does not write here yet — see the marker
 in ``app.tasks._run_clone_op``.
 """
 

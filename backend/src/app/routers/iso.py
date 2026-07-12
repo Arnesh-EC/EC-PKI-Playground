@@ -1,4 +1,4 @@
-"""Config-ISO authoring routes (Phase E) — all operator-only via ``ISO_AUTHOR``.
+"""Config-ISO authoring routes — all operator-only via ``ISO_AUTHOR``.
 
 Two transports feed an authored ``createVm``:
 

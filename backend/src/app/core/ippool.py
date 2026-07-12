@@ -1,4 +1,4 @@
-"""Guest IP allocation pool (Phase G).
+"""Guest IP allocation pool.
 
 One document per address in the operator-configured guest range (``guest*``
 fields on the settings singleton), pre-seeded so allocation is a single atomic

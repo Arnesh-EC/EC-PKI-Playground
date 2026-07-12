@@ -1,5 +1,5 @@
 """Sequence engine — walks a list of :class:`Step`\\ s, dispatching each to
-the agent and handling reboots and verify-with-backoff (Phase L).
+the agent and handling reboots and verify-with-backoff.
 
 Every side effect is injected, so the walk logic is unit-testable without
 redis, Mongo, or a real agent:

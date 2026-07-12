@@ -1,6 +1,6 @@
-"""Worker-side glue that runs a :class:`SequenceEngine` with concrete effects
-(Phase L slice 9): the agentbus dispatch bridge, Mongo-backed reboot waits, and
-``plan_runs`` cursor/artifact persistence for redelivery-safe resume.
+"""Worker-side glue that runs a :class:`SequenceEngine` with concrete effects:
+the agentbus dispatch bridge, Mongo-backed reboot waits, and ``plan_runs``
+cursor/artifact persistence for redelivery-safe resume.
 
 Kept separate from :mod:`app.core.sequences.engine` (pure) and
 :mod:`app.tasks` (Celery/vmkit) so the wiring has one home. Everything here

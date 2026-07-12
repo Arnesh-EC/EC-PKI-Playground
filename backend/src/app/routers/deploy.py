@@ -7,7 +7,7 @@ worker (``app.tasks.run_plan_task``), streaming per-op state over the existing
 ``/api/ws/jobs/{job_id}`` transport as one ``PlanStateMsg`` per transition.
 
 Vocabulary is exactly the five op kinds the frontend staging store can produce
-(see ``frontend/src/lib/staging.ts``). Since Phase G every ``createVm`` is a
+(see ``frontend/src/lib/staging.ts``). Every ``createVm`` is a
 real clone — the server decides, never a client flag — booted from a per-VM
 firstboot ISO carrying a pool-allocated guest IP; the other four kinds remain
 simulated stubs (see ``app.tasks._simulate_op``).
@@ -40,7 +40,7 @@ from app.core.jobs.models import JobStatus, QueuedMsg
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
 
-# Authored-ISO caps (Phase E). Files ride inline in the deploy payload (and
+# Authored-ISO caps. Files ride inline in the deploy payload (and
 # through the Celery broker), so they are text-only and tightly bounded.
 ISO_MAX_FILES = 20
 ISO_FILE_MAX_BYTES = 256 * 1024
@@ -75,7 +75,7 @@ class PlanOp(BaseModel):
     id: str
     kind: PlanOpKind
     target: str
-    #: The second node an op involves (Phase L): the DC a member joins, the
+    #: The second node an op involves: the DC a member joins, the
     #: parent CA an issuing CA connects to, the CA issuing a web/client cert.
     #: The backend resolves both nodes' real guest-namespaced identities from
     #: the registry when expanding the op into agent commands.
@@ -135,7 +135,7 @@ def validate_plan(
                     detail=f"Op '{op.id}': ISO content is only valid on createVm ops.",
                 )
             # Cross-node ops name their second node so the backend can resolve
-            # its real identity (Phase L). ``secondary``/``target`` are canvas
+            # its real identity. ``secondary``/``target`` are canvas
             # node ids (not op ids), resolved from the registry at run time — a
             # node created earlier this plan or surviving from a prior deploy —
             # so they aren't validated against the op-id set here. domainLeave
@@ -176,7 +176,7 @@ def validate_plan(
         iso_id = op.params.get("isoId")
         authored = bool(op.files) or bool(iso_id)
         if authored:
-            # The hard Phase E gate: authored discs run arbitrary scripts as
+            # The hard authored-ISO gate: authored discs run arbitrary scripts as
             # SYSTEM and bypass the pool — DEPLOY alone (guest-eligible) must
             # never be enough to submit one.
             if Capability.ISO_AUTHOR not in ROLE_CAPABILITIES[user.role]:

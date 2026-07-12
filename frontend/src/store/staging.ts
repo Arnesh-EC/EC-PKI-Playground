@@ -100,7 +100,7 @@ interface StagingState {
  * canvas node name — the backend namespaces guest names server-side from the
  * authenticated identity (`enforce_guest_vm_name`), so the client must never
  * prefix it itself (a client-side prefix just gets prefixed again). Every
- * createVm is a real clone since Phase G — the backend allowlists `template`
+ * createVm is a real clone — the backend allowlists `template`
  * and decides for itself; there is no client `simulate` flag anymore. An
  * enabled ISO panel rides as either name-sorted inline `files` (PACK —
  * matching the 10-/20-/30- manifest order convention) or an `isoId` param
@@ -200,7 +200,7 @@ function applyPlanState(opsState: Record<string, OpRunState>) {
           // can never clobber an already-recorded identity with undefined.
           ...(typeof result?.ip === "string" ? { ip: result.ip } : {}),
           ...(typeof result?.vmName === "string" ? { vmName: result.vmName } : {}),
-          // Auto-provisioned orchestrator identity (Phase F): the agent baked
+          // Auto-provisioned orchestrator identity: the agent baked
           // into the ISO phones home under this vm_id; surfaces in the Inspector.
           ...(agentVmId !== undefined ? { orchestratorVmId: agentVmId } : {}),
         })
@@ -425,7 +425,7 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
         id: op.id,
         kind: op.kind,
         target: op.targetNodeId,
-        // The DC/parent-CA/issuing-CA the op wires to (Phase L) — the backend
+        // The DC/parent-CA/issuing-CA the op wires to — the backend
         // resolves its real guest-namespaced identity to build join/enroll
         // command params. Dropped previously; now carried through.
         ...(op.secondaryNodeId ? { secondary: op.secondaryNodeId } : {}),

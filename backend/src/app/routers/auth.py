@@ -1,8 +1,8 @@
 """Auth routes — identity-based session lifecycle and deploy config discovery.
 
-Phase B replaced "ESXi credentials are the login" with a real identity layer;
-which ESXi host gets used is a separate, shared org-wide setting
-(``core/esxi.py``). Login is always required — there is no anonymous mode.
+Identity is a real layer decoupled from the ESXi target; which ESXi host gets
+used is a separate, shared org-wide setting (``core/esxi.py``). Login is always
+required — there is no anonymous mode.
 Both operators and guests are accounts in the users collection; the ``role``
 on the account decides the feature set (``core/authz.py``).
 

@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "No shared ESXi target configured yet — VM routes will 503 until an "
             "operator sets one via PUT /api/settings."
         )
-    # Phase L: forward worker→agent dispatch requests to whichever socket this
+    # Forward worker→agent dispatch requests to whichever socket this
     # process holds (the plan runner's command bridge). Runs for the app's life.
     dispatch_task = asyncio.create_task(run_dispatch_subscriber())
     try:

@@ -1,4 +1,4 @@
-"""Declarative step model for reboot-spanning provisioning sequences (Phase L).
+"""Declarative step model for reboot-spanning provisioning sequences.
 
 A plan op (``createVm``, ``domainJoin``, ``caConnect``, …) expands backend-side
 into an ordered list of :class:`Step`\\ s. Each step is one agent command

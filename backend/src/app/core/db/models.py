@@ -71,7 +71,7 @@ class ProjectDoc(MongoModel):
         default_factory=list, max_length=50, alias="stagedOps"
     )
     deploy_job_id: str | None = Field(default=None, alias="deployJobId")
-    # Phase B stub — always None until users/ownership land.
+    # Stub — always None until users/ownership land.
     owner: str | None = None
     schema_version: int = Field(default=1, alias="schemaVersion")
     created_at: int = Field(alias="createdAt")
@@ -93,7 +93,7 @@ class VmRegistryEntry(MongoModel):
     moid: str | None = None
     status: Literal["cloning", "ready", "error", "deleted"] = "ready"
     power_state: str | None = Field(default=None, alias="powerState")
-    # Guest-pool address baked into the VM's firstboot ISO (Phase G); None for
+    # Guest-pool address baked into the VM's firstboot ISO; None for
     # VMs that predate the pool. The pool collection is authoritative for
     # allocation state — this is the display/registry copy.
     ip: str | None = None
@@ -106,7 +106,7 @@ class VmRegistryEntry(MongoModel):
 class SettingsDoc(BaseModel):
     """The settings singleton (fixed ``_id`` — not a ``MongoModel``).
 
-    Authoritative (Phase B) for the one shared org-wide ESXi target — seeded
+    Authoritative for the one shared org-wide ESXi target — seeded
     from env on first boot, then admin-editable via the settings routes with
     no restart (``core/esxi.py`` reloads it per request). The password is
     stored only as the ``core/secrets.py`` ``{keyId, nonce, ciphertext}``
@@ -122,7 +122,7 @@ class SettingsDoc(BaseModel):
         default=None, alias="esxiPasswordEnc"
     )
     esxi_port: int = Field(default=443, alias="esxiPort")
-    # Guest subnet (Phase G) — an inclusive start/end range (not a CIDR, so it
+    # Guest subnet — an inclusive start/end range (not a CIDR, so it
     # can never include the network/broadcast/gateway addresses) that the IP
     # pool (``core/ippool.py``) is seeded from. All four of start/end/gateway/
     # dns1 must be set for guest deploys to run (configgen's static network

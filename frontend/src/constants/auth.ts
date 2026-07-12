@@ -25,7 +25,7 @@ export const CAPABILITIES = {
   vmUpdate: "vm:update",
   vmPower: "vm:power",
   configGenerate: "config:generate",
-  isoAuthor: "iso:author", // operator-only — authored/uploaded config ISOs (Phase E)
+  isoAuthor: "iso:author", // operator-only — authored/uploaded config ISOs
   vmExecArbitrary: "vm:exec-arbitrary", // reserved — future orchestrator phase
   deploy: "deploy",
   projectRead: "project:read", // operator-only — gates server-side project persistence

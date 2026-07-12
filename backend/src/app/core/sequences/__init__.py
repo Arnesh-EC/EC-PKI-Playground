@@ -1,4 +1,4 @@
-"""Reboot-spanning provisioning sequences (Phase L).
+"""Reboot-spanning provisioning sequences.
 
 A plan op expands into a declarative list of :class:`~app.core.sequences.model.Step`\\ s
 (:mod:`~app.core.sequences.definitions`), walked by the pure

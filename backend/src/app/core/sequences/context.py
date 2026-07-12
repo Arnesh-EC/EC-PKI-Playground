@@ -1,4 +1,4 @@
-"""Cross-node context resolution for plan-op sequences (Phase L).
+"""Cross-node context resolution for plan-op sequences.
 
 A non-createVm op (domainJoin / caConnect / webServerCert) touches more than
 its own node: a member joins a *DC*, an issuing CA cross-signs with a *root*

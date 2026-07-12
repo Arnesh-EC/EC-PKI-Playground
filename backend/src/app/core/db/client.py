@@ -80,7 +80,7 @@ async def _ensure_indexes() -> None:
         [
             # List endpoint sorts by recency.
             IndexModel([("updatedAt", DESCENDING)]),
-            # Phase B per-owner listing; cheap to create now on all-null owner.
+            # Per-owner listing; cheap to create now on all-null owner.
             IndexModel([("owner", ASCENDING), ("updatedAt", DESCENDING)]),
         ]
     )
@@ -94,7 +94,7 @@ async def _ensure_indexes() -> None:
             IndexModel([("moid", ASCENDING)], unique=True, sparse=True),
         ]
     )
-    # Phase A used a sparse unique email index, but documents store an explicit
+    # An earlier design used a sparse unique email index, but documents store an explicit
     # ``email: null`` (pydantic dumps the field), which sparse indexes DO index —
     # two email-less users would collide. Replace it with a partial index that
     # only indexes real string values.
@@ -124,7 +124,7 @@ async def _ensure_indexes() -> None:
             ),
         ]
     )
-    # plan_runs (Phase L): per-plan cross-VM context + per-step resume cursor +
+    # plan_runs: per-plan cross-VM context + per-step resume cursor +
     # artifact relay. TTL-expired ~7d after the last write so finished runs
     # self-evict. `expireAfterSeconds` is on a Date field, so `updatedAt` here
     # is a real datetime, distinct from the `now_ms()` epoch-millis used

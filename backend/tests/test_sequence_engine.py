@@ -1,4 +1,4 @@
-"""Sequence-engine walk logic (Phase L slice 9) — reboot waits, verify backoff,
+"""Sequence-engine walk logic — reboot waits, verify backoff,
 artifact relay, and resume-skip, all with injected effects (no redis/Mongo)."""
 
 import pytest

@@ -4,14 +4,14 @@ The Rust ``pki-orchestrator`` agent connects outbound to
 ``ws /api/orchestrator/connect`` once running, authenticating with a
 vm_id/token pair. Two ways that pair exists:
 
-* **Persisted (Phase F):** the clone worker mints it and stores the hash on the
+* **Persisted:** the clone worker mints it and stores the hash on the
   VM's ``vm_registry`` document; the agent binary + its ``orchestrator.toml``
   are baked onto the firstboot ISO, so a real deployed agent phones home with
   no human in the loop.
 * **Pending (manual/dev):** ``POST /orchestrator/register`` mints an in-process
   pair a human pastes into a local config.
 
-Provisioning is **plan-driven** (Phase L): the connect handler no longer
+Provisioning is **plan-driven**: the connect handler no longer
 dispatches a per-template command on connect. It only marks the agent live
 (``agentbus.mark_agent_live`` — the liveness key + ``lastConnectedAt`` the
 worker's sequence engine waits on) and relays the agent's progress frames onto
@@ -191,7 +191,7 @@ async def connect(websocket: WebSocket) -> None:
     headers (the agent's path) or ``?vm_id=&token=`` (manual/dev). Auth is
     validated before ``accept()`` (4401 on failure). Provisioning is no longer
     kicked off here — the Celery plan runner drives every command through the
-    ``agent-dispatch`` bridge (Phase L).
+    ``agent-dispatch`` bridge.
     """
     vm_id = websocket.headers.get("x-orchestrator-vm-id") or websocket.query_params.get("vm_id")
     token = websocket.headers.get("x-orchestrator-token") or websocket.query_params.get("token")

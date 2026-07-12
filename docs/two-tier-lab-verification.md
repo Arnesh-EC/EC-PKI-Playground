@@ -1,6 +1,6 @@
-# Phase L — Two-tier ADCS lab: verification notes
+# Two-tier ADCS lab: verification notes
 
-The sign-off for Phase L (`plan.md`): the full two-tier Microsoft ADCS lab from
+The sign-off (`plan.md`): the full two-tier Microsoft ADCS lab from
 `pki-lab-guides/vm-building.md` — DC01, CA01 (offline root), CA02 (issuing),
 SRV1 (web + OCSP), WIN11 (client) — deployable end to end from a single canvas
 **Deploy**, ending with `certutil -verify -urlfetch` on WIN11 showing OCSP/CRL/
@@ -93,8 +93,8 @@ Server 2025 VM; each is flagged in-code.
    published cert/CRL paths from the CA common name; certutil's exact
    sanitization of CNs *with spaces* (the issuing CA) is unverified. The root CA
    default (`EC-Root-CA`, no spaces) is safe.
-4. **ML-DSA-87 provider string** (`ca.rs` `MLDSA_PROVIDER`) — carried over from
-   Phase F, still unverified against the 2025 CNG KSP.
+4. **ML-DSA-87 provider string** (`ca.rs` `MLDSA_PROVIDER`) — carried over
+   unchanged, still unverified against the 2025 CNG KSP.
 5. **AD timing** — post-promotion ADWS and template/enrollment propagation
    windows (`verify_window_s`) are tuned by guess; re-tune on real hardware.
 

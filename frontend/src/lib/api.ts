@@ -232,7 +232,7 @@ export interface PlanOpPayload {
   id: string
   kind: string
   target: string
-  /** The DC / parent CA / issuing CA the op wires to (Phase L). */
+  /** The DC / parent CA / issuing CA the op wires to. */
   secondary?: string
   params: Record<string, string>
   /** PACK-mode authored scripts (operator-only; validated server-side). */

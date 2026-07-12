@@ -1,4 +1,4 @@
-"""Per-VM firstboot ISO assembly (Phase G).
+"""Per-VM firstboot ISO assembly.
 
 Every real ``createVm`` boots from a config ISO built here on the Celery
 worker: configgen renders the per-VM hostname and static-network scripts
@@ -12,11 +12,10 @@ Numbering fixes manifest (execution) order: ``10-`` hostname, ``20-`` network,
 ``30-`` role. Scripts never reboot — the firstboot runner in the base image
 owns the single reboot (established configgen convention).
 
-Phase E adds ``build_authored_iso``: an operator-authored script set packed
-verbatim via isokit's v2 API — the server injects nothing (no hostname/network
-render, no role scripts, no pool IP). ``build_firstboot_iso`` (the guest/default
-path) deliberately stays on ``build_script_iso`` and its v1 manifest,
-byte-identical to Phase G.
+``build_authored_iso`` packs an operator-authored script set verbatim via
+isokit's v2 API — the server injects nothing (no hostname/network render, no
+role scripts, no pool IP). ``build_firstboot_iso`` (the guest/default path)
+uses ``build_script_iso`` and its v1 manifest.
 """
 
 import re
@@ -34,14 +33,14 @@ from app.core.ippool import GuestNetwork
 #: agent's Windows service expect (see ``assets/firstboot/_agent``).
 _AGENT_BINARY_NAME = "pki-orchestrator.exe"
 _AGENT_CONFIG_NAME = "orchestrator.toml"
-#: Static install step appended (Phase F) when an agent is bundled. Lives under
+#: Static install step appended when an agent is bundled. Lives under
 #: ``_agent`` (leading underscore → not a template dir, never role-globbed).
 _AGENT_INSTALL_SCRIPT = Path(__file__).parent.parent / "assets" / "firstboot" / "_agent" / "40-install-orchestrator.ps1"
 
 
 @dataclass(frozen=True)
 class AgentBundle:
-    """The pki-orchestrator payload to embed in a firstboot ISO (Phase F).
+    """The pki-orchestrator payload to embed in a firstboot ISO.
 
     ``binary_path`` is the worker-host path to the agent exe;
     ``config_toml`` is the rendered ``orchestrator.toml`` (identity + backend —
@@ -93,9 +92,9 @@ def build_firstboot_iso(
 ) -> Path:
     """Render + pack the per-VM config ISO into ``dest_dir``; returns its path.
 
-    ``agent=None`` keeps the Phase-G behaviour byte-for-byte (isokit v1
-    ``build_script_iso``: hostname + network + role scripts). When an
-    ``AgentBundle`` is given (Phase F), the ISO switches to isokit's v2
+    ``agent=None`` uses isokit v1 ``build_script_iso`` (hostname + network +
+    role scripts). When an ``AgentBundle`` is given, the ISO switches to
+    isokit's v2
     ``build_config_iso`` and additionally carries the agent binary + rendered
     ``orchestrator.toml`` as payload files plus a static install step — so the
     booted VM installs and starts the phone-home agent.
@@ -136,7 +135,7 @@ def build_firstboot_iso(
         isokit.build_script_iso(scripts, iso_path)
         return iso_path
 
-    # v2 (Phase F): embed the agent binary + config as payload files and append
+    # v2: embed the agent binary + config as payload files and append
     # the install step. build_config_iso names disc entries after each path's
     # filename, so the binary is copied to the fixed name the runner expects.
     config_path = dest_dir / _AGENT_CONFIG_NAME

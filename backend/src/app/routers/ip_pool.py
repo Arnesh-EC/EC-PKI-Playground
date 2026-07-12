@@ -1,4 +1,4 @@
-"""Guest IP pool inspection (Phase G).
+"""Guest IP pool inspection.
 
 Read-only view of the per-address allocation documents ``core/ippool.py``
 maintains. Gated on ``REGISTRY_READ`` — like the VM registry, this is runtime

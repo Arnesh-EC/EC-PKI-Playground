@@ -1,4 +1,4 @@
-"""Server-side schema for per-template Inspector config (Phase F).
+"""Server-side schema for per-template Inspector config.
 
 The frontend spreads a node's ``config`` map flat into a ``createVm`` op's
 ``params`` (``store/staging.ts::buildOpPayload``). Those values (CA algorithm,

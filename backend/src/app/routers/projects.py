@@ -10,7 +10,7 @@ persistence client-side, so the shared guest deploy never exposes a
 cross-visitor project list.
 
 Concurrency is last-write-wins — single-operator deployment, one browser tab
-writes. A rev/If-Match check can slot into PUT when multi-user lands (Phase B).
+writes. A rev/If-Match check can slot into PUT when multi-user lands.
 """
 
 import uuid

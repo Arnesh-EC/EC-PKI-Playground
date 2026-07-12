@@ -5,6 +5,10 @@ __pycache__/
 *.egg-info/
 *.iso
 
+# pki-orchestrator agent build artifact — a per-host binary pointed at by
+# ORCHESTRATOR_AGENT_PATH, not vendored in the repo.
+backend/agent/pki-orchestrator.exe
+
 # --- Node / Vite (frontend/) ---
 node_modules/
 dist/

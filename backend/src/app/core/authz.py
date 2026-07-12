@@ -1,11 +1,10 @@
 """Role and capability model, and the request-level identity dependency.
 
-Phase B: the Role/Capability *shape* is unchanged — ``ROLE_CAPABILITIES`` is
-still the single allowlist, and ``require_capability`` still the authoritative
-server-side gate — but a role is now a property of the authenticated **user**
-(``get_current_user``), not of the deployment. Login is always required: both
-operators and guests are accounts in the users collection, and the account's
-``role`` decides the feature set. There is no anonymous session.
+``ROLE_CAPABILITIES`` is the single allowlist, and ``require_capability`` the
+authoritative server-side gate. A role is a property of the authenticated
+**user** (``get_current_user``). Login is always required: both operators and
+guests are accounts in the users collection, and the account's ``role`` decides
+the feature set. There is no anonymous session.
 
 The ``X-Session-Token`` header (and ``?token=`` on WebSockets) now carries a
 backend-signed JWT (``core/identity.py``). For account-backed tokens the user
@@ -61,17 +60,17 @@ class Capability(str, Enum):
 # Guest    → read/guided VM subset only.
 #   CONFIG_GENERATE is operator-only: config is produced server-side on the
 #     guest's behalf (not via a guest-invoked endpoint).
-#   ISO_AUTHOR is operator-only (Phase E): authored/uploaded config ISOs run
+#   ISO_AUTHOR is operator-only: authored/uploaded config ISOs run
 #     arbitrary scripts as SYSTEM on first boot and bypass the guest IP pool —
 #     never a shared-playground surface. Gates the /iso routes and any
 #     createVm op carrying authored content (checked in validate_plan).
 #   VM_EXEC_ARBITRARY is reserved for the firstboot orchestrator (future phase).
 #   DEPLOY is guest-eligible: the plan runner only does what a guest can already
 #     trigger directly (clones) plus simulated stub ops.
-#   VM_DELETE is guest-eligible: self-service teardown is the point (Phase G) —
+#   VM_DELETE is guest-eligible: self-service teardown is the point —
 #     safety comes from ``enforce_guest_vm_ownership`` (a guest can only delete
 #     inside its own name namespace), not from withholding the capability.
-#   VM_PROVISION is guest-eligible for the same reason (Phase F): a guest
+#   VM_PROVISION is guest-eligible for the same reason: a guest
 #     provisioning its *own* throwaway CA/DC is the point; the orchestrator
 #     command route enforces per-VM ownership so it can't target another VM.
 #   PROJECT_* / SETTINGS_* / REGISTRY_* (Mongo persistence) are operator-only:

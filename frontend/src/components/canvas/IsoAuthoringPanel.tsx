@@ -42,7 +42,7 @@ function freshName(existing: string[]): string {
 }
 
 /**
- * Operator-only "Include ISO" section of the Inspector (Phase E). Behind the
+ * Operator-only "Include ISO" section of the Inspector. Behind the
  * toggle sit two modes: PACK — a file-manager-style grid of authored firstboot
  * scripts (double-click to edit; backend packs them with isokit at deploy
  * time) — and UPLOAD-ISO — a pre-built .iso pushed to the backend now and

@@ -53,7 +53,7 @@ export interface IsoFileEntry {
 }
 
 /**
- * Operator-authored config-ISO state for one node (Phase E). When `enabled`,
+ * Operator-authored config-ISO state for one node. When `enabled`,
  * the deploy sends this instead of letting the server render the default
  * hostname/network/role scripts — the panel IS the disc, and the VM gets no
  * pool IP. `pack` carries editable text scripts inline; `uploadIso` references
@@ -80,7 +80,7 @@ export interface MachineData extends Record<string, unknown> {
   /** Config as of the last successful deploy; compared against `config` to derive drift. */
   lastDeployedConfig?: Record<string, string>
   config?: Record<string, string>
-  /** Operator-authored config ISO (Phase E); read fresh at deploy time by `buildOpPayload`. */
+  /** Operator-authored config ISO; read fresh at deploy time by `buildOpPayload`. */
   isoAuthoring?: IsoAuthoring
   /** ISO state as of the last successful deploy; compared against `isoAuthoring` to derive drift. */
   lastDeployedIso?: IsoAuthoring

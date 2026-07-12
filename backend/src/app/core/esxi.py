@@ -1,8 +1,8 @@
 """Shared ESXi target and the managed org-wide connection.
 
-Phase B replaces per-session ESXi credentials with one org-wide target stored
-in the Mongo settings document (password AES-GCM-encrypted, ``core/secrets``).
-Every authenticated user's VM operations run against this single target.
+There is one org-wide ESXi target stored in the Mongo settings document
+(password AES-GCM-encrypted, ``core/secrets``). Every authenticated user's VM
+operations run against this single target.
 
 Connection handling is a managed shared connection, not per-request: opening
 a pyVmomi session is a full TLS handshake + login, so ``ConnectionManager``

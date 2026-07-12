@@ -19,8 +19,8 @@ export function isDeployed(data: MachineData): boolean {
 
 /**
  * Canonical comparison key for a node's authored-ISO state. A disabled or
- * absent panel collapses to "off" (nodes deployed before Phase E have neither
- * field and never read as ISO-drifted); PACK compares the name-sorted file
+ * absent panel collapses to "off" (nodes without either field never read as
+ * ISO-drifted); PACK compares the name-sorted file
  * set, UPLOAD-ISO the uploaded file's identity.
  */
 function isoSignature(iso: IsoAuthoring | undefined): string {

@@ -1,4 +1,4 @@
-"""Worker↔agent dispatch bridge (Phase L).
+"""Worker↔agent dispatch bridge.
 
 Plan execution runs in the Celery worker (blocking hour-scale vmkit clones
 plus IP-pool idempotency belong there, not in the API process), but the

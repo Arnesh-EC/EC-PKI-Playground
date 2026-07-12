@@ -1,8 +1,8 @@
 """Settings singleton routes — the shared org-wide ESXi target.
 
-Authoritative since Phase B: ``core/esxi.py`` reads this document per request,
-so an operator edit here takes effect on the next VM operation with no
-restart. The env ``ESXI_*`` vars are only a first-boot seed.
+``core/esxi.py`` reads this document per request, so an operator edit here
+takes effect on the next VM operation with no restart. The env ``ESXI_*``
+vars are only a first-boot seed.
 
 ``esxiPassword`` is write-only: accepted in the PUT body, stored as the
 AES-GCM blob from ``core/secrets.py``, and never returned — GET exposes just

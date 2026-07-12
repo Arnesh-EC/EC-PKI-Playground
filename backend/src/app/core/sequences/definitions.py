@@ -1,5 +1,5 @@
 """Sequence definitions — the ordered :class:`Step` lists each plan op expands
-into (Phase L).
+into.
 
 Kept declarative and free of I/O so they read like the lab guide's build order
 and stay unit-testable. Slice 9 wires the **createVm provision tails** (what
@@ -61,8 +61,8 @@ def _ds_config_dn(domain: str) -> str:
 
 def _sanitized_cn_file(cn: str) -> str:
     """certutil's CertEnroll file stem for a CA common name. UNVERIFIED for CNs
-    with spaces (the exact sanitization is certutil's) — a Phase L canary; the
-    lab's default CNs (``EC-Root-CA``) have none, so the root path is safe."""
+    with spaces (the exact sanitization is certutil's); the lab's default CNs
+    (``EC-Root-CA``) have none, so the root path is safe."""
     return cn
 
 
@@ -386,7 +386,7 @@ def _web_server_cert_sequence(ctx: RunContext) -> list[Step]:
                 "refreshMinutes": refresh,
                 # The issuing CA's base + delta CRL over HTTP. The `%3%8%9.crl`
                 # publication expands to `<sanitized-CN>.crl` — CN-derived here;
-                # a Phase L canary for CNs with spaces (see _sanitized_cn_file).
+                # unverified for CNs with spaces (see _sanitized_cn_file).
                 "baseCrlUrls": f"http://{pki}/CertEnroll/{_crl_url_name(issuing_cn)}.crl",
                 "deltaCrlUrls": f"http://{pki}/CertEnroll/{_crl_url_name(issuing_cn)}+.crl",
             },

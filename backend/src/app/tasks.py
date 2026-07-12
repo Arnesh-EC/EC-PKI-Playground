@@ -6,7 +6,7 @@ transport (``app.core.jobs.transport``). It reuses ``CloneProgressReducer`` and
 same error → status mapping the synchronous routes use.
 
 The plan runner (``run_plan_task``) walks a validated deploy-plan DAG the same
-way. Since Phase G every ``createVm`` op is a real vmkit clone booted from a
+way. Every ``createVm`` op is a real vmkit clone booted from a
 per-VM firstboot ISO (``core.firstboot``) that bakes in an address claimed
 from the guest IP pool (``core.ippool``); the other op kinds are timed stubs.
 Like the clone task, it opens its own ESXi connection against the shared
@@ -84,7 +84,7 @@ PLAN_CLONE_DEFAULTS = {
 }
 
 #: Three named phases per simulated op kind, ticked at a fixed cadence.
-#: ``createVm`` is deliberately absent — it is always a real clone (Phase G).
+#: ``createVm`` is deliberately absent — it is always a real clone.
 _SIMULATED_PHASES: dict[str, tuple[str, str, str]] = {
     "domainJoin": ("Joining domain", "Rebooting", "Verifying membership"),
     "domainLeave": ("Leaving domain", "Rebooting", "Verifying removal"),
@@ -270,7 +270,7 @@ def _provision_cloned_vm(
     state: dict[str, OpRunState],
     push,
 ) -> bool:
-    """Run a freshly-cloned VM's per-template provision sequence (Phase L).
+    """Run a freshly-cloned VM's per-template provision sequence.
 
     Waits for the baked-in agent to phone home, then walks the template's
     provision steps through the agentbus dispatch bridge (reboots + verify
@@ -342,9 +342,9 @@ def _run_clone_op(
 ) -> bool:
     """Execute a ``createVm`` op for real, from one of three ISO sources:
 
-    - default (Phase G): claim a guest IP, render+pack the per-VM firstboot ISO;
-    - inline authored files (Phase E): pack exactly what the operator wrote;
-    - uploaded ISO (Phase E): fetch the GridFS file and attach it verbatim.
+    - default: claim a guest IP, render+pack the per-VM firstboot ISO;
+    - inline authored files: pack exactly what the operator wrote;
+    - uploaded ISO: fetch the GridFS file and attach it verbatim.
 
     Authored/uploaded ops deliberately claim NO pool address and render nothing
     — the authored content is the complete disc, so their op result carries no
@@ -362,7 +362,7 @@ def _run_clone_op(
 
     ip: str | None = None
     net = None
-    vm_id: str | None = None  # set when an agent identity is minted (Phase F)
+    vm_id: str | None = None  # set when an agent identity is minted
     if not authored:
         net = load_guest_network_sync(db)
         if net is None:
@@ -485,7 +485,7 @@ def _run_clone_op(
             # has served its purpose (orphan sweep is the backstop).
             delete_uploaded_iso_sync(db, iso_id)
 
-        # Phase L: the clone is only half the createVm op. If an agent was
+        # The clone is only half the createVm op. If an agent was
         # baked in, wait for it to phone home and run the template's provision
         # sequence through the dispatch bridge — the op isn't `done` until the
         # VM reaches provisionState=applied, so a dependent domainJoin genuinely
@@ -504,7 +504,7 @@ def _run_clone_op(
             phase="Done",
             # ip/vmName ride the op result so the frontend can label the node
             # and key teardown off the real inventory name. Authored clones
-            # have no pool ip to report. agentVmId (Phase F) lets the Inspector
+            # have no pool ip to report. agentVmId lets the Inspector
             # surface the auto-provisioned orchestrator identity.
             result={
                 **asdict(result),
@@ -558,7 +558,7 @@ def _run_sequence_op(
     state: dict[str, OpRunState],
     push,
 ) -> bool | None:
-    """Run a non-createVm op as a real command sequence (Phase L).
+    """Run a non-createVm op as a real command sequence.
 
     Returns True/False on success/failure, or ``None`` when this op kind has no
     real sequence yet (the caller then falls back to the timed simulation) —
@@ -678,7 +678,7 @@ def run_plan_task(job_id: str, plan: dict, owner_role: str = "guest") -> None:
         try:
             with db_ctx as db:
                 if db is not None:
-                    # Lazy GC for abandoned ISO uploads (Phase E) — piggybacks
+                    # Lazy GC for abandoned ISO uploads — piggybacks
                     # on plan runs instead of needing a scheduler.
                     from app.routers.iso import gc_orphan_isos
 

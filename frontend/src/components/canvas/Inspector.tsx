@@ -200,7 +200,7 @@ function ConfigForm({
 /**
  * Agent correlation + the live orchestrator actions.
  *
- * Since Phase F a real deploy auto-correlates: the clone worker bakes the agent
+ * A real deploy auto-correlates: the clone worker bakes the agent
  * into the ISO and its vm_id rides back on the createVm op result
  * (`orchestratorVmId`, set in `store/staging.ts`), and CA/DC provisioning is
  * dispatched by the backend the moment the agent phones home. The vm_id field
@@ -720,7 +720,7 @@ export function Inspector() {
           </section>
         )}
 
-        {/* Operator-only ISO authoring (Phase E) — available while the node is
+        {/* Operator-only ISO authoring — available while the node is
             still configurable (draft/failed/reconfiguring) or staged (deploy
             reads the panel fresh, so staged edits need no restage). */}
         {isOperator && (showConfigForm || isStaged) && (

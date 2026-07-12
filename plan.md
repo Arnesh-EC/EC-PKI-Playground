@@ -1,4 +1,4 @@
-# Phase L: Full two-tier ADCS lab, deployable from one Deploy click
+# Full two-tier ADCS lab, deployable from one Deploy click
 
 ## Context
 
@@ -9,7 +9,7 @@ root only). Everything past a lone VM is still a stub: the four non-`createVm` p
 phases, and the agent has only 8 commands (`ca.install` rejects subordinate CAs, there is no
 domain-join / DNS / IIS / OCSP / cross-sign / file-transfer capability at all).
 
-The goal of this phase is to make the two-tier Microsoft ADCS lab in
+The goal is to make the two-tier Microsoft ADCS lab in
 `pki-lab-guides/vm-building.md` — DC01, CA01 (offline root), CA02 (issuing), SRV1 (web +
 OCSP), WIN11 (client) — deploy end to end from a single canvas **Deploy**, ending with
 `certutil -verify -urlfetch` on WIN11 showing OCSP/CRL/AIA all verified. That doc is the
