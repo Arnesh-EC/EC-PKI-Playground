@@ -75,40 +75,60 @@ function PlannedAction({
   )
 }
 
+function isHiddenIn(field: ConfigField, values: Record<string, string>) {
+  const cond = field.hideWhen
+  if (!cond) return false
+  const current = values[cond.key]
+  if (cond.equals !== undefined && current === cond.equals) return true
+  if (cond.notEquals !== undefined && current !== cond.notEquals) return true
+  return false
+}
+
+/** The currently-visible field values — the set that gets committed/persisted (hidden fields never leak). */
+function visibleValues(fields: ConfigField[], values: Record<string, string>) {
+  return Object.fromEntries(
+    fields.filter((f) => !isHiddenIn(f, values)).map((f) => [f.key, values[f.key]]),
+  )
+}
+
 /**
  * Inline config form rendered in the Inspector when a node is unconfigured
- * and its template defines configFields. Keyed by nodeId so state resets
- * when the selection changes.
+ * and its template defines configFields. Keyed by nodeId so state resets when
+ * the selection changes — but it re-seeds from the node's persisted `config`
+ * (via `initial`), and mirrors edits back through `onChange`, so switching
+ * away and back (or reloading) preserves in-progress values instead of
+ * resetting them to defaults.
  */
 function ConfigForm({
   fields,
   vmName,
+  initial,
+  onChange,
   onSubmit,
   disabled = false,
 }: {
   fields: ConfigField[]
   vmName?: string
+  initial?: Record<string, string>
+  onChange?: (values: Record<string, string>) => void
   onSubmit: (values: Record<string, string>) => void
   disabled?: boolean
 }) {
-  const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(fields.map((f) => [f.key, f.default])),
-  )
+  const [values, setValues] = useState<Record<string, string>>(() => ({
+    ...Object.fromEntries(fields.map((f) => [f.key, f.default])),
+    ...(initial ?? {}),
+  }))
 
   function set(key: string, value: string) {
-    setValues((prev) => ({ ...prev, [key]: value }))
+    const next = { ...values, [key]: value }
+    setValues(next)
+    // Persist the draft on every edit (visible fields only, matching submit)
+    // so it rides the node's `config` into localStorage/server and survives a
+    // selection switch. Fires only on user input — never eagerly on mount.
+    onChange?.(visibleValues(fields, next))
   }
 
-  const isHidden = (field: ConfigField) => {
-    const cond = field.hideWhen
-    if (!cond) return false
-    const current = values[cond.key]
-    if (cond.equals !== undefined && current === cond.equals) return true
-    if (cond.notEquals !== undefined && current !== cond.notEquals) return true
-    return false
-  }
-
-  const visibleFields = fields.filter((f) => !isHidden(f))
+  const visibleFields = fields.filter((f) => !isHiddenIn(f, values))
   // Every visible password field must satisfy the AD-complexity policy before
   // the node can be configured — the backend re-checks as the real gate.
   const passwordsOk = visibleFields.every(
@@ -116,9 +136,7 @@ function ConfigForm({
   )
 
   function submit() {
-    onSubmit(
-      Object.fromEntries(visibleFields.map((f) => [f.key, values[f.key]])),
-    )
+    onSubmit(visibleValues(fields, values))
   }
 
   return (
@@ -693,6 +711,8 @@ export function Inspector() {
                   key={nodeId}
                   fields={def!.configFields!}
                   vmName={data.name}
+                  initial={data.config}
+                  onChange={(config) => store.setNodeConfig(nodeId, config)}
                   onSubmit={handleConfigure}
                   disabled={deploying}
                 />

@@ -300,6 +300,16 @@ interface TopologyState {
   applyDomainChanges: (changes: DomainSyncChange[]) => void
   configureNode: (id: string, config?: Record<string, string>) => void
   /**
+   * Persists the in-progress config-form values on a pre-deploy node so the
+   * inspector's textboxes/dropdowns survive a selection switch or reload
+   * instead of resetting to their defaults. Unlike `configureNode`, this does
+   * NOT stage anything or change the lifecycle — it only keeps the draft.
+   * Restricted to `draft`/`failed` nodes (the only states whose config form is
+   * editable) and a no-op while deploying, so it can never clobber a
+   * staged/deployed node's committed `config`.
+   */
+  setNodeConfig: (id: string, config: Record<string, string>) => void
+  /**
    * Reattaches job-progress sockets for any node still `deploying` after a
    * reload (has a persisted `jobId`), and reverts any `deploying` node with
    * no `jobId` (a plan-driven op, or a reload mid-enqueue) back to `staged`
@@ -576,6 +586,21 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
       params: {},
       label: "Create VM",
     })
+  },
+
+  setNodeConfig(id, config) {
+    if (useStagingStore.getState().deploying) return
+    set((s) => ({
+      nodes: s.nodes.map((n) => {
+        if (n.id !== id) return n
+        // Only pre-deploy nodes have an editable form; guard so a stray call
+        // can't overwrite a staged/deployed node's committed config.
+        if (n.data.lifecycle !== LIFECYCLE.draft && n.data.lifecycle !== LIFECYCLE.failed) {
+          return n
+        }
+        return { ...n, data: { ...n.data, config } }
+      }),
+    }))
   },
 
   resumeJobs() {
