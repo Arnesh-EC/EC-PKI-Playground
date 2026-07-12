@@ -23,7 +23,6 @@ import { deployPlan, type PlanOpPayload } from "@/lib/api"
 import {
   OP_KIND,
   OP_STATUS,
-  guestVmName,
   inferDependsOn,
   sanitizeOps,
   transitiveDependents,
@@ -96,22 +95,22 @@ interface StagingState {
  * file list). `createVm` params are never persisted on the op itself —
  * `node.data.config` / `node.data.isoAuthoring` (the drift baselines) are the
  * single source of truth, so this reads them fresh at deploy time alongside
- * the deploy-time VM name and the template id. Every createVm is a real clone
- * since Phase G — the backend allowlists `template` and decides for itself;
- * there is no client `simulate` flag anymore. An enabled ISO panel rides as
- * either name-sorted inline `files` (PACK — matching the 10-/20-/30- manifest
- * order convention) or an `isoId` param (UPLOAD-ISO); the backend then
- * injects nothing and allocates no pool IP.
+ * the deploy-time VM name and the template id. `vmName` is sent as the plain
+ * canvas node name — the backend namespaces guest names server-side from the
+ * authenticated identity (`enforce_guest_vm_name`), so the client must never
+ * prefix it itself (a client-side prefix just gets prefixed again). Every
+ * createVm is a real clone since Phase G — the backend allowlists `template`
+ * and decides for itself; there is no client `simulate` flag anymore. An
+ * enabled ISO panel rides as either name-sorted inline `files` (PACK —
+ * matching the 10-/20-/30- manifest order convention) or an `isoId` param
+ * (UPLOAD-ISO); the backend then injects nothing and allocates no pool IP.
  */
-function buildOpPayload(
-  op: StagedOp,
-  token: string | null | undefined,
-): Pick<PlanOpPayload, "params" | "files"> {
+function buildOpPayload(op: StagedOp): Pick<PlanOpPayload, "params" | "files"> {
   if (op.kind !== OP_KIND.createVm) return { params: op.params }
   const node = useTopologyStore.getState().nodes.find((n) => n.id === op.targetNodeId)
   const params: Record<string, string> = {
     ...(node?.data.config ?? {}),
-    vmName: guestVmName(node?.data.name ?? op.targetNodeId, token),
+    vmName: node?.data.name ?? op.targetNodeId,
     template: node?.data.typeId ?? "",
   }
 
@@ -409,7 +408,7 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
     }))
 
     const payload: PlanOpPayload[] = pruned.map((op) => {
-      const { params, files } = buildOpPayload(op, token)
+      const { params, files } = buildOpPayload(op)
       return {
         id: op.id,
         kind: op.kind,

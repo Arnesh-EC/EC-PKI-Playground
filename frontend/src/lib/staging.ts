@@ -130,9 +130,3 @@ export function inferDependsOn(
     }
   }
 }
-
-/** `guest-<token-prefix>-<name>` — the naming scheme the real clone API expects. */
-export function guestVmName(name: string, token: string | null | undefined): string {
-  const uniqueId = token ? token.slice(0, 8) : "local"
-  return `guest-${uniqueId}-${name}`
-}

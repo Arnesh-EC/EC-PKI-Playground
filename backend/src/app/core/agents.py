@@ -16,6 +16,11 @@ The live ``_connected`` map is in-process only (single API process — documente
 constraint; multi-worker WS fan-out would need a broker relay). It holds the
 live ``WebSocket`` per vm_id plus a send lock, since a dispatched command runs
 in a different request's coroutine than the one that accepted the connection.
+
+Presence: every mutation of ``_connected`` signals the in-process subscriber
+queues (``subscribe_presence``), which is what drives the frontend's live
+agent-online indicator (``ws /orchestrator/agents/watch``) — same
+single-API-process constraint as the map itself.
 """
 
 import asyncio
@@ -31,6 +36,7 @@ from fastapi import WebSocket
 _pending: dict[str, str] = {}  # vm_id -> token
 _connected: dict[str, "AgentConnection"] = {}  # vm_id -> live connection
 _lock = threading.Lock()
+_presence_queues: set["asyncio.Queue[None]"] = set()  # presence-change signals
 
 
 @dataclass
@@ -95,12 +101,34 @@ async def authenticate_persisted(vm_id: str, token: str) -> bool:
 # --------------------------------------------------------------------------- #
 # Live connection map                                                         #
 # --------------------------------------------------------------------------- #
+def _notify_presence() -> None:
+    """Wake every presence subscriber (they re-read the map themselves — the
+    signal carries no payload, so a burst of changes coalesces harmlessly)."""
+    for queue in list(_presence_queues):
+        queue.put_nowait(None)
+
+
+def subscribe_presence() -> "asyncio.Queue[None]":
+    """A queue that receives one signal per ``_connected`` mutation. Callers
+    must pair with ``unsubscribe_presence`` (all on the API event loop)."""
+    queue: "asyncio.Queue[None]" = asyncio.Queue()
+    with _lock:
+        _presence_queues.add(queue)
+    return queue
+
+
+def unsubscribe_presence(queue: "asyncio.Queue[None]") -> None:
+    with _lock:
+        _presence_queues.discard(queue)
+
+
 def connect_agent(vm_id: str, websocket: WebSocket) -> AgentConnection:
     """Record the live connection for ``vm_id`` (overwriting any prior entry —
     the caller closes the old socket first for a clean takeover)."""
     conn = AgentConnection(websocket=websocket)
     with _lock:
         _connected[vm_id] = conn
+        _notify_presence()
     return conn
 
 
@@ -108,7 +136,10 @@ def pop_connection(vm_id: str) -> AgentConnection | None:
     """Remove and return the live connection for ``vm_id`` (for takeover /
     forced disconnect on teardown)."""
     with _lock:
-        return _connected.pop(vm_id, None)
+        conn = _connected.pop(vm_id, None)
+        if conn is not None:
+            _notify_presence()
+        return conn
 
 
 def disconnect_if(vm_id: str, conn: "AgentConnection") -> None:
@@ -117,6 +148,7 @@ def disconnect_if(vm_id: str, conn: "AgentConnection") -> None:
     with _lock:
         if _connected.get(vm_id) is conn:
             del _connected[vm_id]
+            _notify_presence()
 
 
 def resolve_agent(vm_id: str) -> AgentConnection | None:

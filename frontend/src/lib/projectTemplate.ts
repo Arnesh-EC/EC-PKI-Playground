@@ -1,0 +1,156 @@
+/**
+ * Pre-configured PKI starter topology (the "Project Template" choice on the
+ * project landing page).
+ *
+ * Rather than hand-craft nodes/edges/ops — which would have to re-implement
+ * every invariant in `lib/topology.ts` and `lib/staging.ts` by hand — this
+ * drives the real topology-store actions (`addNode` → `configureNode` →
+ * `connect` → `applyDomainChanges`). That guarantees the result is internally
+ * consistent and deploy-ready: valid CA-hierarchy tree, correct staged ops in
+ * topological order, and a domain whose circle encloses its members.
+ *
+ * The caller (`store/projects.ts::addProjectFromTemplate`) runs this inside
+ * `withSuppressedAutosave` and snapshots the working stores into the freshly
+ * created project afterwards.
+ *
+ * The site-specific identities below (domain, NetBIOS, forest level, CA names,
+ * CPS URL, lab admin password) are read from `VITE_PKI_*` env vars so they can
+ * be changed per-deployment without editing code — see `frontend/.env.example`.
+ */
+
+import { DEFAULT_VIEWPORT, useTopologyStore } from "@/store/topology"
+import { useStagingStore } from "@/store/staging"
+import { domainLabel } from "@/lib/topology"
+import type { DomainSyncChange } from "@/store/topology"
+
+/** Reads a `VITE_*` env var, falling back to `fallback` when unset/blank. */
+function envDefault(key: string, fallback: string): string {
+  const v = (import.meta.env as Record<string, string | undefined>)[key]
+  return typeof v === "string" && v.trim().length > 0 ? v : fallback
+}
+
+/**
+ * Template defaults, env-overridable. The domain-admin password satisfies the
+ * AD-complexity policy (`lib/passwordPolicy.ts`: ≥12 chars, ≥3 classes, no
+ * "Administrator"/machine name) so the template deploys without edits — it's a
+ * throwaway lab credential, meant to be changed for anything real.
+ */
+const PKI = {
+  domainName: envDefault("VITE_PKI_DOMAIN_NAME", "EncryptionConsulting.com"),
+  netbiosName: envDefault("VITE_PKI_NETBIOS_NAME", "ENCRYPTIONCONSU"),
+  forestLevel: envDefault("VITE_PKI_FOREST_LEVEL", "Windows Server 2022"),
+  domainAdminPassword: envDefault("VITE_PKI_DOMAIN_ADMIN_PASSWORD", "EcPkiLab#2026Key"),
+  rootCaCn: envDefault("VITE_PKI_ROOT_CA_CN", "EC-Root-CA"),
+  issuingCaCn: envDefault("VITE_PKI_ISSUING_CA_CN", "EC-Issuing-CA"),
+  cpsUrl: envDefault("VITE_PKI_CPS_URL", "http://pki.EncryptionConsulting.com/cps.txt"),
+}
+
+/**
+ * Resets the working topology + staging stores, then builds a two-tier ADCS
+ * lab: an offline Root CA signing an enterprise Issuing CA, a Domain
+ * Controller, an IIS web server publishing CDP/AIA, and a Windows client — the
+ * CA/web wired up and the members domain-joined. Every VM is left `staged`, so
+ * the project is one Deploy away from real clones.
+ */
+export function buildPkiTemplateIntoStores() {
+  // Fresh slate — clear any graph the previous project left in the stores.
+  useStagingStore.getState().loadOps([], null)
+  useTopologyStore.getState().loadSnapshot([], [], {}, DEFAULT_VIEWPORT)
+
+  // addNode auto-names and doesn't return the id, so read the just-appended
+  // node back off the store before configuring it (which stages its createVm).
+  const addConfigured = (
+    typeId: string,
+    position: { x: number; y: number },
+    config?: Record<string, string>,
+  ): string | null => {
+    const store = useTopologyStore.getState()
+    store.addNode(typeId, position)
+    const node = useTopologyStore.getState().nodes.at(-1)
+    if (!node) return null
+    useTopologyStore.getState().configureNode(node.id, config)
+    return node.id
+  }
+
+  const rootId = addConfigured(
+    "certificateAuthority",
+    { x: 180, y: 100 },
+    {
+      caType: "Root",
+      commonName: PKI.rootCaCn,
+      keyAlgorithm: "RSA",
+      keyLength: "4096",
+      hashAlgorithm: "SHA256",
+      validityYears: "20",
+    },
+  )
+  const issuingId = addConfigured(
+    "certificateAuthority",
+    { x: 500, y: 140 },
+    {
+      caType: "Issuing",
+      commonName: PKI.issuingCaCn,
+      keyAlgorithm: "RSA",
+      keyLength: "2048",
+      hashAlgorithm: "SHA256",
+      validityYears: "10",
+      cpsUrl: PKI.cpsUrl,
+    },
+  )
+  const dcId = addConfigured(
+    "domainController",
+    { x: 500, y: 340 },
+    {
+      domainName: PKI.domainName,
+      netbiosName: PKI.netbiosName,
+      forestLevel: PKI.forestLevel,
+      domainAdminPassword: PKI.domainAdminPassword,
+    },
+  )
+  const webId = addConfigured(
+    "webServer",
+    { x: 740, y: 340 },
+    { certEnrollPath: "C:\\CertEnroll", enableOcsp: "Enabled", ocspRefreshMinutes: "15" },
+  )
+  // Client template has no config fields.
+  const clientId = addConfigured("client", { x: 500, y: 560 })
+
+  // Offline Root signs the Issuing CA (a dashed "manual transfer" edge).
+  if (rootId && issuingId) {
+    useTopologyStore.getState().connect({
+      source: rootId,
+      target: issuingId,
+      sourceHandle: "hierarchy",
+      targetHandle: "hierarchy-in",
+    })
+  }
+  // Issuing CA publishes its CRL/AIA to the web server.
+  if (issuingId && webId) {
+    useTopologyStore.getState().connect({
+      source: issuingId,
+      target: webId,
+      sourceHandle: "server",
+      targetHandle: null,
+    })
+  }
+
+  // Enrol the issuing CA, web server and client into the DC's domain (the
+  // offline root stays out — roots must never be domain-joined).
+  if (dcId) {
+    const dc = useTopologyStore.getState().nodes.find((n) => n.id === dcId)
+    if (dc) {
+      const domainName = domainLabel(dc)
+      const members = [issuingId, webId, clientId].filter(
+        (id): id is string => !!id,
+      )
+      const changes: DomainSyncChange[] = members
+        .map((nodeId): DomainSyncChange | null => {
+          const node = useTopologyStore.getState().nodes.find((n) => n.id === nodeId)
+          if (!node) return null
+          return { nodeId, nodeName: node.data.name, dcId, domainName }
+        })
+        .filter((c): c is DomainSyncChange => c !== null)
+      useTopologyStore.getState().applyDomainChanges(changes)
+    }
+  }
+}

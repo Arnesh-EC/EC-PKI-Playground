@@ -1,8 +1,5 @@
 import { useEffect, useRef } from "react"
-import { useMutation, useQuery } from "@tanstack/react-query"
-import { toast } from "sonner"
-import { AUTH_MODES, CAPABILITIES, QUERY_KEYS } from "@/constants"
-import { ApiError, getMode, guestConnect } from "@/lib/api"
+import { CAPABILITIES, ROLES } from "@/constants"
 import { useAuthStore } from "@/store/auth"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -31,59 +28,19 @@ function App() {
 
   useBeforeUnloadWarning()
 
+  // Login is always required — no anonymous mode. Without a session token the
+  // first (and only) screen is the login form; both operators and guests sign
+  // in with an account (guests via username/password only).
   const token = useAuthStore((s) => s.token)
-
-  const { data: meta, isLoading: modeLoading } = useQuery({
-    queryKey: QUERY_KEYS.mode,
-    queryFn: getMode,
-  })
-
-  const autoConnect = useMutation({
-    mutationFn: guestConnect,
-    onSuccess: ({ token, username, role, host }) => {
-      useAuthStore.getState().setSession({ token, username, role, host })
-    },
-    onError: (err) =>
-      toast.error(
-        err instanceof ApiError ? `${err.status}: ${err.message}` : String(err),
-      ),
-  })
-
-  // In guest mode, always establish a fresh session on load. A persisted token
-  // may be stale (guest JWTs expire after SESSION_TTL_HOURS), and a fresh one
-  // is free — no credentials involved. Trusting a dead token would 401 the
-  // first request (e.g. the standalone clone).
-  // Clear any persisted token first so the splash shows until reconnect lands.
-  const didInit = useRef(false)
-  useEffect(() => {
-    if (meta?.mode !== AUTH_MODES.guest || didInit.current) return
-    didInit.current = true
-    useAuthStore.getState().clear()
-    autoConnect.mutate()
-  }, [meta, autoConnect])
+  const sessionReady = !!token
 
   // Once a session exists, load the active project's topology (or bootstrap a
   // default one) and start the autosave bridge. Runs once per session.
   //
-  // Gated on `sessionReady` rather than the raw `token`: in guest mode the
-  // first render after a reload still has the *stale* persisted token (the
-  // `didInit` effect above hasn't cleared it yet), so gating on `token` would
-  // run this before `autoConnect` lands — `ensureDefaultProject`'s `loadSnapshot`
-  // would call `resumeJobs()` in the brief window where `clear()` already
-  // nulled the token but the fresh guest session hasn't arrived yet, making
-  // every resumed job socket fail its handshake (401) and revert to
-  // `unconfigured`. Waiting for `autoConnect.isSuccess` ensures a live token
-  // is in the store before resume runs.
-  const sessionReady =
-    meta?.mode === AUTH_MODES.guest
-      ? autoConnect.isSuccess
-      : meta?.mode === AUTH_MODES.login
-        ? !!token
-        : false
   // Operator roles carry the project:* capabilities → projects live on the
   // server (lib/projectSync.ts). Guests keep localStorage persistence.
-  // Capabilities are per-user now (GET /auth/me), so wait for that query
-  // before choosing a persistence mode — `me` is undefined until it lands.
+  // Capabilities are per-user (GET /auth/me), so wait for that query before
+  // choosing a persistence mode — `me` is undefined until it lands.
   const me = useMe()
   const canProjects = !!me?.capabilities.includes(CAPABILITIES.projectRead)
   const syncStatus = useProjectSyncStore((s) => s.status)
@@ -97,12 +54,7 @@ function App() {
     else useProjectsStore.getState().ensureDefaultProject()
   }, [sessionReady, me, canProjects])
 
-  if (modeLoading) return <Splash />
-
-  if (!token) {
-    if (meta?.mode === AUTH_MODES.login) return <LoginForm />
-    return <Splash label="Connecting to playground…" />
-  }
+  if (!token) return <LoginForm />
 
   // Capabilities (GET /auth/me) decide the persistence mode below; rendering
   // the workspace before they land would flash the wrong mode for operators.
@@ -128,7 +80,7 @@ function App() {
     return <Splash label="Loading projects…" />
   }
 
-  const isGuest = meta?.mode === AUTH_MODES.guest
+  const isGuest = me.role === ROLES.guest
 
   return (
     <div className="flex h-svh flex-col overflow-hidden">
@@ -139,11 +91,8 @@ function App() {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <HealthBadge />
-          {isGuest ? (
-            <Badge variant="secondary">Guest</Badge>
-          ) : (
-            <LogoutButton />
-          )}
+          {isGuest && <Badge variant="secondary">Guest</Badge>}
+          <LogoutButton />
           <SettingsDialog />
           <ThemeToggle />
         </div>

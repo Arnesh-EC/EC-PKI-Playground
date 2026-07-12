@@ -1,10 +1,11 @@
 """Application settings — read from environment variables and an optional .env file.
 
-The single most important field is ``auth_mode``:
-  ``login``  — internal deploy; users sign in with an admin-provisioned account
-               (username/password) or employee SSO (OIDC).
-  ``guest``  — public playground; an anonymous guest session is minted
-               automatically for each visitor.
+Login is always required — there is no anonymous/auto-connect mode. Every
+visitor signs in with an admin-provisioned account (username/password) or
+employee SSO (OIDC). Both operators and guests are real accounts in the users
+collection; the difference is the ``role`` the account carries (operators get
+the full feature set, guests a restricted subset — ``core/authz.py``). Guests
+sign in with username/password only; SSO is an operator/employee path.
 
 Identity and the ESXi target are decoupled (Phase B): who you are comes from
 the users collection / the IdP, while *which* ESXi host gets used is the one
@@ -19,8 +20,6 @@ fail-fast validated below; generate each with ``openssl rand -base64 32``:
                           ESXi password (``core/secrets.py``).
 """
 
-from typing import Literal
-
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -28,12 +27,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    auth_mode: Literal["login", "guest"] = "login"
-
     # Identity layer (Phase B).
     session_secret: str | None = None
     session_ttl_hours: int = 12
     settings_enc_key: str | None = None
+
+    # Example guest account, seeded into the users collection at startup if
+    # absent (idempotent — never overwrites an existing account or a password
+    # an operator has since changed). Gives a fresh deploy a working
+    # username/password login out of the box; disable by setting the password
+    # empty. This is a low-privilege guest role, not an operator (bootstrap the
+    # first operator with ``uv run create-admin``).
+    example_guest_username: str = "guest"
+    example_guest_password: str = "guest-playground"
 
     # Employee SSO — generic OIDC (Keycloak and Azure AD both fit). Enabled iff
     # issuer, client id/secret, and redirect URI are all set. Group values are

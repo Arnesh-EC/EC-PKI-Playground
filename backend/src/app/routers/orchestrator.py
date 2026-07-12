@@ -46,6 +46,7 @@ from app.core.authz import (
     enforce_guest_vm_ownership,
     get_current_user,
     require_capability,
+    resolve_user_token,
 )
 from app.core.db import vm_registry_col
 from app.core.jobs import transport
@@ -258,15 +259,12 @@ def _relay_progress(job_id: str, state: dict) -> None:
         )
 
 
-@router.get(
-    "/agents",
-    dependencies=[Depends(require_capability(Capability.VM_LIST))],
-)
-async def list_agents(user: AuthedUser = Depends(get_current_user)) -> dict:
-    """List vm_ids with a currently-connected agent (guests see only their own)."""
+async def _visible_agent_vm_ids(user: AuthedUser) -> list[str]:
+    """vm_ids with a currently-connected agent, filtered to the caller's own
+    namespace for guests (operators see everything)."""
     vm_ids = agents.connected_vm_ids()
     if user.role != Role.GUEST:
-        return {"vm_ids": vm_ids}
+        return vm_ids
 
     owned: list[str] = []
     for vm_id in vm_ids:
@@ -278,4 +276,74 @@ async def list_agents(user: AuthedUser = Depends(get_current_user)) -> dict:
         except HTTPException:
             continue
         owned.append(vm_id)
-    return {"vm_ids": owned}
+    return owned
+
+
+@router.get(
+    "/agents",
+    dependencies=[Depends(require_capability(Capability.VM_LIST))],
+)
+async def list_agents(user: AuthedUser = Depends(get_current_user)) -> dict:
+    """List vm_ids with a currently-connected agent (guests see only their own)."""
+    return {"vm_ids": await _visible_agent_vm_ids(user)}
+
+
+#: Fallback re-check cadence for the presence watch — bounds how stale a
+#: snapshot can go if a change ever slips past the in-process signal, and how
+#: long a silently-dead browser socket lingers before a send attempt notices.
+_PRESENCE_REFRESH_S = 30
+
+
+@router.websocket("/agents/watch")
+async def watch_agents(websocket: WebSocket, token: str | None = None) -> None:
+    """Live agent-presence stream — the frontend's per-node online indicator.
+
+    Auth mirrors ``ws /api/ws/jobs``: the session JWT rides as ``?token=``
+    (browsers can't set headers on the upgrade) and is resolved by the same
+    ``resolve_user_token``; 4401 on failure. On connect the client gets one
+    ``{"type": "agents", "vm_ids": [...]}`` snapshot (guest-filtered like
+    ``GET /agents``), then a fresh snapshot the moment any agent connects or
+    disconnects (via ``agents.subscribe_presence`` — in-process, same
+    single-API-process constraint as the connection map itself).
+    """
+    user = await resolve_user_token(token)
+    if user is None or Capability.VM_LIST not in ROLE_CAPABILITIES[user.role]:
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+
+    queue = agents.subscribe_presence()
+    # The browser never sends frames; a pending receive is how we notice it
+    # going away while we sit between presence changes.
+    receiver = asyncio.create_task(websocket.receive_text())
+    signal = asyncio.create_task(queue.get())
+    try:
+        last: list[str] | None = None
+        while True:
+            vm_ids = await _visible_agent_vm_ids(user)
+            if vm_ids != last:
+                await websocket.send_json({"type": "agents", "vm_ids": vm_ids})
+                last = vm_ids
+            done, _ = await asyncio.wait(
+                {signal, receiver},
+                timeout=_PRESENCE_REFRESH_S,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if receiver in done:
+                receiver.result()  # raises WebSocketDisconnect on close
+                return  # an unexpected client frame — treat as end-of-watch
+            if signal in done:
+                signal.result()
+                # Coalesce a burst of changes into one snapshot re-read.
+                while not queue.empty():
+                    queue.get_nowait()
+                signal = asyncio.create_task(queue.get())
+            # else: timeout — fall through and re-verify the snapshot
+    except WebSocketDisconnect:
+        pass
+    finally:
+        agents.unsubscribe_presence(queue)
+        for task in (receiver, signal):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
+                await task

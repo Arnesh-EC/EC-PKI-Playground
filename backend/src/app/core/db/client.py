@@ -33,6 +33,7 @@ async def init_db() -> None:
     await _client.admin.command("ping")
     await _ensure_indexes()
     await _seed_settings_doc()
+    await _seed_example_account()
     await _seed_ip_pool()
 
 
@@ -193,6 +194,47 @@ async def _seed_settings_doc() -> None:
                 }
             },
         )
+
+
+async def _seed_example_account() -> None:
+    """Seed the example guest account (username/password) if it doesn't exist.
+
+    Gives a fresh deploy a working login out of the box. Idempotent and
+    non-destructive: only inserts when the username is absent, so it never
+    overwrites the account or a password an operator later changed. Skipped if
+    the password is configured empty. Deferred import: ``core.identity`` pulls
+    in pwdlib, kept out of module scope to match ``_seed_settings_doc``.
+    """
+    import logging
+
+    from pymongo.errors import DuplicateKeyError
+
+    from app.core.db.models import UserDoc
+    from app.core.identity import hash_password
+
+    username = settings.example_guest_username
+    password = settings.example_guest_password
+    if not username or not password:
+        return
+    if await users_col().find_one({"username": username}) is not None:
+        return
+    doc = UserDoc(
+        id=username,
+        username=username,
+        password_hash=hash_password(password),
+        role="guest",
+        auth="local",
+        created_at=now_ms(),
+        updated_at=now_ms(),
+    )
+    try:
+        await users_col().insert_one(to_mongo(doc))
+    except DuplicateKeyError:
+        return  # lost a concurrent-boot race; the account already exists
+    logging.getLogger(__name__).info(
+        "Seeded example guest account '%s' (change or remove for production).",
+        username,
+    )
 
 
 async def _seed_ip_pool() -> None:

@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react"
-import { Plus, Save } from "lucide-react"
+import { Plus, Save, X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useProjectsStore } from "@/store/projects"
+import { useStagingStore } from "@/store/staging"
+import { ProjectDeleteDialog } from "./ProjectDeleteDialog"
 
 export function ProjectTabBar() {
   const projects = useProjectsStore((s) => s.projects)
@@ -12,12 +14,16 @@ export function ProjectTabBar() {
   const switchProject = useProjectsStore((s) => s.switchProject)
   const renameProject = useProjectsStore((s) => s.renameProject)
   const addProject = useProjectsStore((s) => s.addProject)
+  const deleteProject = useProjectsStore((s) => s.deleteProject)
   const saveActiveSnapshot = useProjectsStore((s) => s.saveActiveSnapshot)
+  const deploying = useStagingStore((s) => s.deploying)
   const isActiveDirty =
     projects.find((p) => p.id === activeProjectId)?.dirty ?? false
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftName, setDraftName] = useState("")
+  // Project pending deletion — drives the confirm dialog.
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null)
 
   useEffect(() => {
     function handler(e: KeyboardEvent) {
@@ -38,6 +44,11 @@ export function ProjectTabBar() {
   function commitEditing() {
     if (editingId) renameProject(editingId, draftName)
     setEditingId(null)
+  }
+
+  function confirmDelete() {
+    if (pendingDelete) deleteProject(pendingDelete.id)
+    setPendingDelete(null)
   }
 
   return (
@@ -64,25 +75,45 @@ export function ProjectTabBar() {
         }
 
         return (
-          <button
+          <div
             key={project.id}
-            type="button"
-            onClick={() => switchProject(project.id)}
-            onDoubleClick={() => startEditing(project.id, project.name)}
             className={cn(
-              "h-7 rounded-[min(var(--radius-md),12px)] px-2.5 text-xs font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+              "group flex h-7 items-center rounded-[min(var(--radius-md),12px)] pr-1 transition-colors",
               isActive
                 ? "bg-secondary text-secondary-foreground"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground",
             )}
           >
-            {project.name}
-            {project.dirty && (
-              <span className="ml-1 text-muted-foreground" aria-label="Unsaved changes">
-                *
-              </span>
-            )}
-          </button>
+            <button
+              type="button"
+              onClick={() => switchProject(project.id)}
+              onDoubleClick={() => startEditing(project.id, project.name)}
+              className="h-full rounded-[inherit] pl-2.5 pr-1.5 text-xs font-medium whitespace-nowrap outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            >
+              {project.name}
+              {project.dirty && (
+                <span className="ml-1 text-muted-foreground" aria-label="Unsaved changes">
+                  *
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              disabled={deploying}
+              onClick={() => setPendingDelete({ id: project.id, name: project.name })}
+              aria-label={`Delete ${project.name}`}
+              title="Delete project"
+              className={cn(
+                "flex h-4 w-4 items-center justify-center rounded-sm outline-none transition-colors",
+                "opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
+                "hover:bg-foreground/10 hover:text-foreground",
+                "disabled:cursor-not-allowed disabled:opacity-0",
+                isActive && "opacity-60",
+              )}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
         )
       })}
 
@@ -106,6 +137,12 @@ export function ProjectTabBar() {
       >
         <Save />
       </Button>
+
+      <ProjectDeleteDialog
+        projectName={pendingDelete?.name ?? null}
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }

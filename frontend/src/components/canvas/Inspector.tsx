@@ -441,9 +441,7 @@ export function Inspector() {
 
   const [editingName, setEditingName] = useState(false)
   const [draftName, setDraftName] = useState("")
-  const [reconfiguring, setReconfiguring] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<StagedOp[] | null>(null)
-  const [pendingTeardown, setPendingTeardown] = useState<StagedOp[] | null>(null)
 
   const canPower = useCan(CAPABILITIES.vmPower)
   const canUpdate = useCan(CAPABILITIES.vmUpdate)
@@ -496,12 +494,14 @@ export function Inspector() {
     setEditingName(false)
   }
 
+  // Only pre-deploy nodes can be deleted (a real VM is never touched from the
+  // canvas). A bare draft with nothing staged deletes with no dialog — that's
+  // the low-friction path; anything with staged ops confirms the cascade.
+  const canDelete = !data.vmName && !isConfigured && !isConfiguring && !isDestroying
+
   function handleDelete() {
     const affected = opsReferencingNode(useStagingStore.getState().ops, nodeId)
-    // A deployed node always confirms — deleting only removes it from the
-    // canvas, the VM itself is left running on the host, and that's worth a
-    // pause even when there's nothing staged to cascade.
-    if (affected.length === 0 && !isConfigured) {
+    if (affected.length === 0) {
       store.removeNode(nodeId)
       toast("Node removed.")
       return
@@ -517,26 +517,14 @@ export function Inspector() {
     setPendingDelete(null)
   }
 
-  function handleTeardown() {
-    setPendingTeardown(opsReferencingNode(useStagingStore.getState().ops, nodeId))
-  }
-
-  function confirmTeardown() {
-    store.teardownNode(nodeId)
-    toast.info(`Tearing down "${data.name}"…`)
-    setPendingTeardown(null)
-  }
-
   function handleConfigure(config?: Record<string, string>) {
     store.configureNode(nodeId, config)
     toast.info(`Configuring "${data.name}"…`)
-    setReconfiguring(false)
   }
 
   const hasConfigFields = !!(def?.configFields && def.configFields.length > 0)
   const showConfigForm =
-    (!isConfigured && !isConfiguring && !isStaged && !isDestroying) ||
-    (isConfigured && reconfiguring)
+    !isConfigured && !isConfiguring && !isStaged && !isDestroying
 
   return (
     <aside className="flex w-64 shrink-0 flex-col gap-0 overflow-x-hidden overflow-y-auto border-l bg-sidebar transition-[width] duration-200 ease-in-out">
@@ -810,7 +798,7 @@ export function Inspector() {
         )}
 
         {/* Stored config values (post-configure) */}
-        {isConfigured && data.config && !reconfiguring && (
+        {isConfigured && data.config && (
           <section className="flex flex-col gap-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Configuration
@@ -833,50 +821,27 @@ export function Inspector() {
           </section>
         )}
 
-        {/* Actions — guests only ever see the functional Reconfigure; the
-            disabled planned-action stubs are operator-facing roadmap, not
-            product surface. */}
-        {isConfigured && !reconfiguring && (isOperator || hasConfigFields) && (
+        {/* Actions — operator-only power stubs (roadmap). A deployed node's
+            config is fixed: there is no reconfigure, and guests get no actions. */}
+        {isConfigured && isOperator && (
           <section className="flex flex-col gap-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Actions
             </p>
 
             <div className="flex flex-col gap-1.5">
-              {isOperator && (
-                <>
-                  <PlannedAction
-                    icon={Power}
-                    label="Power On"
-                    tip="Power controls coming soon"
-                    disabled={!canPower || deploying}
-                  />
-                  <PlannedAction
-                    icon={PowerOff}
-                    label="Power Off"
-                    tip="Power controls coming soon"
-                    disabled={!canPower || deploying}
-                  />
-                </>
-              )}
-              {hasConfigFields ? (
-                <PlannedAction
-                  icon={RefreshCw}
-                  label="Reconfigure"
-                  tip="Edit configuration and re-apply"
-                  disabled={!canUpdate || deploying}
-                  onClick={() => setReconfiguring(true)}
-                />
-              ) : (
-                isOperator && (
-                  <PlannedAction
-                    icon={RefreshCw}
-                    label="Reconfigure"
-                    tip="Coming soon"
-                    disabled={!canUpdate || deploying}
-                  />
-                )
-              )}
+              <PlannedAction
+                icon={Power}
+                label="Power On"
+                tip="Power controls coming soon"
+                disabled={!canPower || deploying}
+              />
+              <PlannedAction
+                icon={PowerOff}
+                label="Power Off"
+                tip="Power controls coming soon"
+                disabled={!canPower || deploying}
+              />
             </div>
           </section>
         )}
@@ -884,7 +849,7 @@ export function Inspector() {
         {/* Orchestrator phone-home: manual agent correlation + live hostname/IP/cert
             actions. Operator-only — raw vm_id/token correlation and agent commands
             are infra internals the guest product surface must not expose. */}
-        {isOperator && isConfigured && !reconfiguring && (
+        {isOperator && isConfigured && (
           <section className="flex flex-col gap-2 border-t pt-3">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Orchestrator
@@ -899,62 +864,29 @@ export function Inspector() {
           </section>
         )}
 
-        {/* Danger zone — a node backed by a real VM tears the VM down (one
-            destructive action, one outcome: guests must not silently orphan
-            VMs their localStorage project is the only reference to); the
-            canvas-only delete survives as an operator escape hatch. */}
-        <section className="flex flex-col gap-2 border-t pt-3">
-          {data.vmName ? (
-            <>
-              <Button
-                variant="destructive"
-                size="sm"
-                className="w-full justify-start gap-2"
-                disabled={deploying || isDestroying}
-                onClick={handleTeardown}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Tear down VM
-              </Button>
-              {isOperator && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="w-full justify-start gap-2 text-muted-foreground"
-                  disabled={deploying || isDestroying}
-                  onClick={handleDelete}
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Remove from canvas (keep VM)
-                </Button>
-              )}
-            </>
-          ) : (
+        {/* Danger zone — only pre-deploy nodes can be deleted. Once a real VM
+            exists (deployed/deploying/destroying) there is no destructive
+            action on the canvas: the VM stays put. */}
+        {canDelete && (
+          <section className="flex flex-col gap-2 border-t pt-3">
             <Button
               variant="destructive"
               size="sm"
               className="w-full justify-start gap-2"
-              disabled={deploying || isDestroying}
+              disabled={deploying}
               onClick={handleDelete}
             >
               <Trash2 className="h-3.5 w-3.5" />
               Delete node
             </Button>
-          )}
-        </section>
+          </section>
+        )}
       </div>
 
       <StagedRemoveDialog
         ops={pendingDelete}
-        hostNote={isConfigured}
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
-      />
-      <StagedRemoveDialog
-        ops={pendingTeardown}
-        teardown
-        onConfirm={confirmTeardown}
-        onCancel={() => setPendingTeardown(null)}
       />
     </aside>
   )

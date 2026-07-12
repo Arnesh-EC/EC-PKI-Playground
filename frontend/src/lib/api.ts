@@ -11,7 +11,7 @@
  * UI returns to the login form (handles backend restart / expired sessions).
  */
 
-import { API_BASE, URLS, type AuthMode, type Capability } from "@/constants"
+import { API_BASE, URLS, type Capability } from "@/constants"
 import type { ProjectDoc, ProjectPayload } from "@/lib/projectSerialize"
 import { useAuthStore } from "@/store/auth"
 
@@ -74,7 +74,7 @@ export interface LoginRequest {
   password: string
 }
 
-/** Every token-minting route (login, SSO callback, guest) returns this shape. */
+/** Every token-minting route (login, SSO callback) returns this shape. */
 export interface SessionResponse {
   token: string
   username: string
@@ -92,12 +92,12 @@ export const login = (req: LoginRequest) =>
 export const logout = () =>
   request<{ status: string }>(URLS.auth.logout, { method: "POST" })
 
-export interface AuthMeta {
-  mode: AuthMode
+export interface AuthConfig {
   oidcEnabled: boolean
 }
 
-export const getMode = () => request<AuthMeta>(URLS.auth.mode)
+/** Unauthenticated deploy config — whether the SSO button should show. */
+export const getAuthConfig = () => request<AuthConfig>(URLS.auth.config)
 
 export interface Me {
   username: string
@@ -108,9 +108,6 @@ export interface Me {
 
 /** The signed-in identity + capability allowlist (what `useCan` reads). */
 export const getMe = () => request<Me>(URLS.auth.me)
-
-export const guestConnect = () =>
-  request<SessionResponse>(URLS.auth.guest, { method: "POST" })
 
 /** Start the SSO code flow: redirect the browser to the returned IdP URL. */
 export const oidcLoginUrl = () => request<{ url: string }>(URLS.auth.oidcLogin)
@@ -363,9 +360,3 @@ export const dispatchOrchestratorCommand = (
     body: JSON.stringify({ command, params }),
   })
 
-export interface ConnectedAgents {
-  vm_ids: string[]
-}
-
-export const listConnectedAgents = () =>
-  request<ConnectedAgents>(URLS.orchestrator.agents)

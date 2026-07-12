@@ -276,7 +276,9 @@ def _provision_cloned_vm(
     provision steps through the agentbus dispatch bridge (reboots + verify
     handled by the engine). Flips ``provisionState`` applied/failed and returns
     whether it succeeded. An empty sequence (nothing to self-provision on first
-    boot — e.g. a member server or an issuing CA) is a trivial success."""
+    boot — e.g. a member server or an issuing CA) still waits for phone-home —
+    the op must never read ``done`` while the orchestrator has yet to connect,
+    and later cross-node ops assume every clone in the plan has a live agent."""
     from app.core import agentbus
     from app.core.firstboot import hostname_for
     from app.core.sequences import NodeContext, RunContext, SequenceError
@@ -286,9 +288,6 @@ def _provision_cloned_vm(
 
     template = op.params["template"]
     steps = provision_steps(template, ca_type=op.params.get("caType"))
-    if not steps:
-        _set_provision_state(conn_db, op.params["vmName"], "applied")
-        return True
 
     vm_name = op.params["vmName"]
     _set_provision_state(conn_db, vm_name, "applying")
@@ -296,29 +295,30 @@ def _provision_cloned_vm(
     push()
     try:
         agentbus.wait_for_agent(vm_id, timeout_s=1200)
-        state[op.id] = OpRunState(status="running", percent=100.0, phase="Provisioning")
-        push()
-        node = NodeContext(
-            node_id=op.target,
-            vm_name=vm_name,
-            hostname=hostname_for(vm_name),
-            agent_vm_id=vm_id,
-            ip=ip,
-            template_id=template,
-            template_config=extract_template_config(template, op.params),
-        )
-        # Domain facts from the plan's DC op so the root CA's DSConfigDN / pki
-        # URLs resolve even when the DC VM isn't up yet.
-        domain_name, netbios = _plan_domain_facts(ops)
-        ctx = RunContext(
-            nodes={"primary": node},
-            domain_name=domain_name,
-            netbios=netbios,
-            pki_host=f"pki.{domain_name}" if domain_name else None,
-        )
-        run_op_sequence(
-            conn_db, steps, ctx, plan_job_id=job_id, op_id=op.id, role=owner_role
-        )
+        if steps:
+            state[op.id] = OpRunState(status="running", percent=100.0, phase="Provisioning")
+            push()
+            node = NodeContext(
+                node_id=op.target,
+                vm_name=vm_name,
+                hostname=hostname_for(vm_name),
+                agent_vm_id=vm_id,
+                ip=ip,
+                template_id=template,
+                template_config=extract_template_config(template, op.params),
+            )
+            # Domain facts from the plan's DC op so the root CA's DSConfigDN /
+            # pki URLs resolve even when the DC VM isn't up yet.
+            domain_name, netbios = _plan_domain_facts(ops)
+            ctx = RunContext(
+                nodes={"primary": node},
+                domain_name=domain_name,
+                netbios=netbios,
+                pki_host=f"pki.{domain_name}" if domain_name else None,
+            )
+            run_op_sequence(
+                conn_db, steps, ctx, plan_job_id=job_id, op_id=op.id, role=owner_role
+            )
     except (SequenceError, agentbus.AgentUnreachableError, agentbus.DispatchError,
             agentbus.ReconnectTimeoutError) as exc:
         _set_provision_state(conn_db, vm_name, "failed")

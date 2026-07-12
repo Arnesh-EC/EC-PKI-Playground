@@ -1,36 +1,31 @@
-"""Auth routes — identity-based session lifecycle and deploy-mode discovery.
+"""Auth routes — identity-based session lifecycle and deploy config discovery.
 
 Phase B replaced "ESXi credentials are the login" with a real identity layer;
 which ESXi host gets used is a separate, shared org-wide setting
-(``core/esxi.py``). Session bootstrap by deploy mode (AUTH_MODE env var):
+(``core/esxi.py``). Login is always required — there is no anonymous mode.
+Both operators and guests are accounts in the users collection; the ``role``
+on the account decides the feature set (``core/authz.py``).
 
-  login (internal)
-    POST /auth/login          — admin-provisioned username/password; returns a JWT.
-    GET  /auth/oidc/login     — employee SSO: returns the IdP redirect URL (if configured).
-    POST /auth/oidc/callback  — completes the SSO code flow; returns a JWT.
-    POST /auth/guest          — 403 (not available in login mode)
-
-  guest (public playground)
-    POST /auth/guest          — mints an anonymous guest-role JWT; no account involved.
-    POST /auth/login          — 403 (no accounts on a public playground deploy)
-
-  both
-    GET  /auth/mode           — unauthenticated discovery: {"mode", "oidcEnabled"}.
-                                (Capabilities moved to /auth/me — they depend on
-                                who logged in, which /mode can't know.)
-    GET  /auth/me             — the authenticated user's identity + capability list.
-    POST /auth/logout         — client-side token discard acknowledgement. Tokens
-                                are stateless JWTs, so there is nothing server-side
-                                to drop; disabling the account is the kill switch.
-    POST /auth/connect        — 410 Gone (the pre-Phase-B ESXi-credential login).
+  POST /auth/login          — admin-provisioned username/password; returns a JWT.
+                              Guests sign in exclusively through here.
+  GET  /auth/oidc/login     — employee SSO: returns the IdP redirect URL (if configured).
+  POST /auth/oidc/callback  — completes the SSO code flow; returns a JWT.
+  GET  /auth/config         — unauthenticated discovery: {"oidcEnabled"} (whether
+                              to show the SSO button). Role/capabilities are
+                              per-user — fetch them from GET /auth/me after login.
+  GET  /auth/me             — the authenticated user's identity + capability list.
+  POST /auth/logout         — client-side token discard acknowledgement. Tokens
+                              are stateless JWTs, so there is nothing server-side
+                              to drop; disabling the account is the kill switch.
+  POST /auth/connect        — 410 Gone (the pre-Phase-B ESXi-credential login).
+  POST /auth/guest          — 410 Gone (anonymous guest sessions were removed;
+                              guests now log in with a username/password account).
 
 Passwords travel only in the /auth/login request body; what's stored is an
 Argon2id hash in the users collection. Account-backed tokens are re-checked
 against the user document on every request (``core/authz.py``), so disabling
 an account revokes access immediately despite JWT statelessness.
 """
-
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -47,19 +42,18 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 # --------------------------------------------------------------------------- #
-# Mode discovery (unauthenticated — called by the frontend on every load)     #
+# Config discovery (unauthenticated — called by the frontend on every load)   #
 # --------------------------------------------------------------------------- #
 
 
-@router.get("/mode")
-def get_mode() -> dict:
-    """Return the deploy's auth mode and whether SSO is available.
+@router.get("/config")
+def get_config() -> dict:
+    """Return unauthenticated deploy config — whether SSO is available.
 
-    The frontend uses ``mode`` to decide login-form vs guest auto-connect and
-    ``oidcEnabled`` to show the SSO button. Role/capabilities are per-user now
-    — fetch them from ``GET /auth/me`` after signing in.
+    The frontend uses ``oidcEnabled`` to show the SSO button. Role/capabilities
+    are per-user — fetch them from ``GET /auth/me`` after signing in.
     """
-    return {"mode": settings.auth_mode, "oidcEnabled": settings.oidc_enabled}
+    return {"oidcEnabled": settings.oidc_enabled}
 
 
 # --------------------------------------------------------------------------- #
@@ -73,7 +67,7 @@ class LoginRequest(BaseModel):
 
 
 async def _session_response(username: str, role: Role, auth: AuthProvenance) -> dict:
-    """Uniform shape for every token-minting route (local, OIDC, guest)."""
+    """Uniform shape for every token-minting route (local login, OIDC)."""
     target = await load_target()
     return {
         "token": mint_token(username, role.value, auth),
@@ -86,18 +80,12 @@ async def _session_response(username: str, role: Role, auth: AuthProvenance) -> 
 
 @router.post("/login")
 async def login(req: LoginRequest) -> dict:
-    """Password login against the admin-provisioned users collection.
+    """Password login against the users collection — operators and guests alike.
 
-    403 in guest mode (a public playground has no accounts). A uniform 401
-    for unknown username / wrong password / disabled account / OIDC-only
-    account — and ``verify_password`` burns one Argon2 verification even for
-    unknown usernames, so responses don't oracle which part failed.
+    A uniform 401 for unknown username / wrong password / disabled account /
+    OIDC-only account — and ``verify_password`` burns one Argon2 verification
+    even for unknown usernames, so responses don't oracle which part failed.
     """
-    if settings.auth_mode == "guest":
-        raise HTTPException(
-            status_code=403,
-            detail="Account login is not available in guest mode.",
-        )
     doc = await users_col().find_one({"username": req.username})
     valid = verify_password(req.password, (doc or {}).get("passwordHash"))
     if not valid or doc is None or doc.get("disabled"):
@@ -132,26 +120,15 @@ def connect_gone() -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Guest-mode endpoint                                                          #
-# --------------------------------------------------------------------------- #
-
-
 @router.post("/guest")
-async def guest_connect() -> dict:
-    """Mint an anonymous guest-role session (guest mode only).
-
-    The frontend calls this automatically on load. No user document is
-    involved; the synthetic ``sub`` seeds the per-visitor VM-name namespace
-    (``authz.enforce_guest_vm_name``). Raises 403 in login mode.
-    """
-    if settings.auth_mode == "login":
-        raise HTTPException(
-            status_code=403,
-            detail="Guest auto-connect is not available in login mode.",
-        )
-    sub = f"guest-{uuid.uuid4().hex[:12]}"
-    return await _session_response(sub, Role.GUEST, "guest")
+def guest_gone() -> None:
+    """Anonymous guest sessions were removed — guests now sign in with a
+    username/password account (role ``guest``). Kept as an explicit tombstone
+    so stale clients get an actionable error instead of a bare 404."""
+    raise HTTPException(
+        status_code=410,
+        detail="Anonymous guest sessions were removed — sign in via /auth/login.",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -168,8 +145,6 @@ class OidcCallbackRequest(BaseModel):
 async def oidc_login() -> dict:
     """Start the SSO code flow: the SPA redirects to the returned URL."""
     oidc.require_oidc()
-    if settings.auth_mode == "guest":
-        raise HTTPException(status_code=403, detail="SSO is not available in guest mode.")
     return {"url": await oidc.build_authorization_url()}
 
 
@@ -178,8 +153,6 @@ async def oidc_callback(req: OidcCallbackRequest) -> dict:
     """Complete the SSO code flow: verify state, exchange the code, validate
     the ID token, map IdP groups → Role, upsert the user, mint a session."""
     oidc.require_oidc()
-    if settings.auth_mode == "guest":
-        raise HTTPException(status_code=403, detail="SSO is not available in guest mode.")
 
     nonce = oidc.verify_state(req.state)
     tokens = await oidc.exchange_code(req.code)

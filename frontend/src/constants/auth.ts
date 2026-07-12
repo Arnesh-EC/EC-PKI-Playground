@@ -1,19 +1,15 @@
 /**
- * Auth mode and capability registries.
+ * Role and capability registries.
  *
- * These are the frontend mirrors of the backend's AuthMode / Capability enums
+ * These are the frontend mirrors of the backend's Role / Capability enums
  * (core/authz.py). String values must stay in sync with the backend.
+ *
+ * Login is always required — there is no anonymous mode; both operators and
+ * guests are accounts, distinguished by their role.
  *
  * Types are derived from the const objects — there are no hand-written unions.
  * Add or rename a value here and the type updates automatically.
  */
-
-export const AUTH_MODES = {
-  login: "login",
-  guest: "guest",
-} as const
-
-export type AuthMode = (typeof AUTH_MODES)[keyof typeof AUTH_MODES]
 
 export const ROLES = {
   operator: "operator",

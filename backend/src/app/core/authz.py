@@ -3,9 +3,9 @@
 Phase B: the Role/Capability *shape* is unchanged — ``ROLE_CAPABILITIES`` is
 still the single allowlist, and ``require_capability`` still the authoritative
 server-side gate — but a role is now a property of the authenticated **user**
-(``get_current_user``), not of the deployment. ``AUTH_MODE`` only decides how
-sessions begin: ``login`` deploys take account/SSO sign-in, ``guest`` deploys
-mint anonymous guest tokens.
+(``get_current_user``), not of the deployment. Login is always required: both
+operators and guests are accounts in the users collection, and the account's
+``role`` decides the feature set. There is no anonymous session.
 
 The ``X-Session-Token`` header (and ``?token=`` on WebSockets) now carries a
 backend-signed JWT (``core/identity.py``). For account-backed tokens the user
@@ -111,19 +111,15 @@ async def resolve_user_token(token: str | None) -> AuthedUser | None:
     can't set custom headers on the upgrade request, so those authenticate via
     a query param).
 
-    Anonymous guest tokens (``auth: guest``) have no user document — their
-    role comes from the claim. Account-backed tokens re-read the user doc so
-    ``disabled`` and role edits apply immediately; the token's own role claim
-    is deliberately ignored in that path.
+    Every token is account-backed now — the user document is re-read on each
+    request so ``disabled`` and role edits apply immediately; the token's own
+    role claim is deliberately ignored (the doc is authoritative).
     """
     if not token:
         return None
     payload = decode_token(token)
     if payload is None:
         return None
-
-    if payload["auth"] == "guest":
-        return AuthedUser(username=payload["sub"], role=Role.GUEST, auth="guest")
 
     from app.core.db import users_col  # deferred: keep authz importable without Mongo init
 

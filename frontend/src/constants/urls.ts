@@ -19,8 +19,7 @@ export const URLS = {
     login: "/auth/login",
     logout: "/auth/logout",
     me: "/auth/me",
-    mode: "/auth/mode",
-    guest: "/auth/guest",
+    config: "/auth/config",
     oidcLogin: "/auth/oidc/login",
     oidcCallback: "/auth/oidc/callback",
   },
@@ -53,5 +52,6 @@ export const URLS = {
   // the upgrade in dev.
   ws: {
     jobs: (id: string) => `/ws/jobs/${encodeURIComponent(id)}`,
+    agents: "/orchestrator/agents/watch",
   },
 } as const

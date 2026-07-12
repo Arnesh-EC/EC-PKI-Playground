@@ -72,9 +72,9 @@ export interface JobSocketHandlers {
   onError?: (event: ErrorEvent) => void
 }
 
-function jobSocketUrl(jobId: string, token: string | null | undefined): string {
+function wsUrl(path: string, token: string | null | undefined): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:"
-  const base = `${proto}//${window.location.host}${API_BASE}${URLS.ws.jobs(jobId)}`
+  const base = `${proto}//${window.location.host}${API_BASE}${path}`
   return token ? `${base}?token=${encodeURIComponent(token)}` : base
 }
 
@@ -87,7 +87,7 @@ export function openJobSocket(
   token: string | null | undefined,
   handlers: JobSocketHandlers,
 ): () => void {
-  const ws = new WebSocket(jobSocketUrl(jobId, token))
+  const ws = new WebSocket(wsUrl(URLS.ws.jobs(jobId), token))
   let settled = false
 
   ws.onmessage = (ev) => {
@@ -132,6 +132,47 @@ export function openJobSocket(
         detail: "Progress connection closed before completion.",
       })
     }
+  }
+
+  return () => {
+    ws.onmessage = null
+    ws.onclose = null
+    ws.close()
+  }
+}
+
+/** One agent-presence snapshot from `ws /api/orchestrator/agents/watch` — the full set of connected vm_ids, re-sent whole on every change. */
+export interface AgentsEvent {
+  type: "agents"
+  vm_ids: string[]
+}
+
+/**
+ * Subscribe to live orchestrator-agent presence. `onAgents` fires with a full
+ * snapshot on connect and again the moment any agent connects or disconnects;
+ * `onClose` fires when the socket drops for any reason (the caller owns
+ * reconnect policy). Returns a `close()` that detaches handlers silently.
+ */
+export function openAgentsSocket(
+  token: string | null | undefined,
+  handlers: { onAgents: (vmIds: string[]) => void; onClose?: () => void },
+): () => void {
+  const ws = new WebSocket(wsUrl(URLS.ws.agents, token))
+
+  ws.onmessage = (ev) => {
+    let msg: AgentsEvent
+    try {
+      msg = JSON.parse(ev.data) as AgentsEvent
+    } catch {
+      return
+    }
+    if (msg.type === "agents" && Array.isArray(msg.vm_ids)) {
+      handlers.onAgents(msg.vm_ids)
+    }
+  }
+
+  ws.onclose = () => {
+    handlers.onClose?.()
   }
 
   return () => {

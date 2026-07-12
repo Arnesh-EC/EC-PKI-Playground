@@ -4,7 +4,7 @@ import { toast } from "sonner"
 import { QUERY_KEYS } from "@/constants"
 import {
   ApiError,
-  getMode,
+  getAuthConfig,
   login,
   oidcCallback,
   oidcLoginUrl,
@@ -45,7 +45,10 @@ export function LoginForm() {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
 
-  const { data: meta } = useQuery({ queryKey: QUERY_KEYS.mode, queryFn: getMode })
+  const { data: config } = useQuery({
+    queryKey: QUERY_KEYS.config,
+    queryFn: getAuthConfig,
+  })
 
   const loginMutation = useMutation({
     mutationFn: (req: LoginRequest) => login(req),
@@ -128,7 +131,7 @@ export function LoginForm() {
               {loginMutation.isPending ? "Signing in…" : "Sign in"}
             </Button>
 
-            {meta?.oidcEnabled && (
+            {config?.oidcEnabled && (
               <Button
                 type="button"
                 variant="outline"

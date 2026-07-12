@@ -2,8 +2,12 @@ import { useEffect } from "react"
 import { ReactFlowProvider } from "@xyflow/react"
 import { Canvas } from "./Canvas"
 import { Inspector } from "./Inspector"
+import { ProjectLanding } from "./ProjectLanding"
 import { ProjectTabBar } from "./ProjectTabBar"
 import { Toolbox } from "./Toolbox"
+import { attachAgentsSocket } from "@/store/agents"
+import { useAuthStore } from "@/store/auth"
+import { useProjectsStore } from "@/store/projects"
 import { useStagingStore } from "@/store/staging"
 
 /**
@@ -13,6 +17,15 @@ import { useStagingStore } from "@/store/staging"
  * Rendered by App.tsx in the authenticated shell; auth gating is upstream.
  */
 export function Workspace() {
+  // Live orchestrator-agent presence for the whole workspace — one socket
+  // feeding every node's online dot and the Inspector's "Agent: Connected"
+  // row. Keyed to the session token so a re-login reattaches with fresh auth.
+  const token = useAuthStore((s) => s.token)
+  useEffect(() => {
+    if (!token) return
+    return attachAgentsSocket(token)
+  }, [token])
+
   // Ctrl/Cmd+Z pops the last staged op — mirrors the Staged panel's Undo
   // button. Ignored while typing (rename field, config form, ...) so it
   // doesn't fight normal text-input undo.
@@ -36,6 +49,11 @@ export function Workspace() {
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [])
+
+  // No active project (the last one was deleted) → the landing page replaces
+  // the whole workspace; there's no project to show a toolbox/tabs/canvas for.
+  const hasActiveProject = useProjectsStore((s) => s.activeProjectId !== null)
+  if (!hasActiveProject) return <ProjectLanding />
 
   return (
     <ReactFlowProvider>

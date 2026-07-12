@@ -30,6 +30,7 @@ import { DEFAULT_VIEWPORT, useTopologyStore } from "@/store/topology"
 import { useStagingStore } from "@/store/staging"
 import { withSuppressedAutosave } from "@/lib/projectAutosave"
 import { gatedLocalStorage } from "@/lib/persistenceMode"
+import { buildPkiTemplateIntoStores } from "@/lib/projectTemplate"
 
 export interface Project {
   id: string
@@ -134,8 +135,17 @@ interface ProjectsState {
     nextProjectNumber: number,
   ) => void
   addProject: () => void
+  /** Creates a new project pre-populated with a deploy-ready PKI lab topology. */
+  addProjectFromTemplate: () => void
   renameProject: (id: string, name: string) => void
   switchProject: (id: string) => void
+  /**
+   * Removes a project. Deleting the active tab falls through to a neighbour;
+   * deleting the last one leaves `activeProjectId` null (the landing page shows)
+   * and clears the working graph. Server-mode DELETE is handled by the
+   * projectSync subscription watching for removed ids.
+   */
+  deleteProject: (id: string) => void
   markActiveDirty: () => void
   saveActiveSnapshot: () => void
   persistActiveDraft: () => void
@@ -184,6 +194,24 @@ export const useProjectsStore = create<ProjectsState>()(
         activate(project)
       },
 
+      addProjectFromTemplate() {
+        get().persistActiveDraft()
+        const n = get().nextProjectNumber
+        const project = emptyProject(`PKI Lab ${n}`)
+        set((s) => ({
+          projects: [...s.projects, project],
+          activeProjectId: project.id,
+          nextProjectNumber: n + 1,
+        }))
+        // Populate the working stores with the ready-to-deploy PKI, then
+        // snapshot it into the freshly-created project. Suppressed so the
+        // build's per-node/edge churn doesn't autosave on every step.
+        withSuppressedAutosave(() => {
+          buildPkiTemplateIntoStores()
+        })
+        get().saveActiveSnapshot()
+      },
+
       renameProject(id, name) {
         const trimmed = name.trim()
         if (!trimmed) return
@@ -201,6 +229,36 @@ export const useProjectsStore = create<ProjectsState>()(
         if (!target) return
         set({ activeProjectId: id })
         activate(target)
+      },
+
+      deleteProject(id) {
+        const { projects, activeProjectId } = get()
+        const idx = projects.findIndex((p) => p.id === id)
+        if (idx === -1) return
+        const remaining = projects.filter((p) => p.id !== id)
+
+        // Deleting a background tab leaves the active project (and the working
+        // stores) untouched — just drop it from the list.
+        if (id !== activeProjectId) {
+          set({ projects: remaining })
+          return
+        }
+
+        // Deleting the active tab: fall through to the next tab (then the
+        // previous), else nothing is left.
+        const next = remaining[idx] ?? remaining[idx - 1] ?? null
+        set({ projects: remaining, activeProjectId: next?.id ?? null })
+        if (next) {
+          activate(next)
+        } else {
+          // No projects left — clear the working graph so the landing page
+          // starts from a clean slate and the deleted project's live sockets
+          // are torn down (loadSnapshot closes them).
+          withSuppressedAutosave(() => {
+            useStagingStore.getState().loadOps([], null)
+            useTopologyStore.getState().loadSnapshot([], [], {}, DEFAULT_VIEWPORT)
+          })
+        }
       },
 
       markActiveDirty() {

@@ -1,23 +1,15 @@
 /**
  * True if the given orchestrator vm_id currently has a connected agent.
  *
- * Polled via `GET /orchestrator/agents` (TanStack Query, same short-interval
- * polling pattern as `HealthBadge`) rather than pushed — there's no presence
- * WebSocket for this in v1; a dispatched command's own progress still
- * streams live over `/ws/jobs/{job_id}`, this is only for the idle
- * connected/not-connected indicator.
+ * Reads the live presence store (`store/agents.ts`), which is pushed fresh
+ * snapshots over `ws /api/orchestrator/agents/watch` the moment any agent
+ * connects or disconnects — the socket is attached for the whole authenticated
+ * workspace (see `Workspace.tsx`), so this hook is a plain subscription with
+ * no per-consumer polling.
  */
 
-import { useQuery } from "@tanstack/react-query"
-import { QUERY_KEYS } from "@/constants"
-import { listConnectedAgents } from "@/lib/api"
+import { useAgentsStore } from "@/store/agents"
 
 export function useAgentConnected(vmId: string | undefined): boolean {
-  const { data } = useQuery({
-    queryKey: QUERY_KEYS.orchestratorAgents,
-    queryFn: listConnectedAgents,
-    refetchInterval: 5_000,
-    enabled: !!vmId,
-  })
-  return !!vmId && !!data?.vm_ids.includes(vmId)
+  return useAgentsStore((s) => !!vmId && s.onlineVmIds.includes(vmId))
 }

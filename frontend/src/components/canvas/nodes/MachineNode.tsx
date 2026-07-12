@@ -14,6 +14,7 @@ import {
   isConnectable,
   truncateLabel,
 } from "@/lib/topology"
+import { useAgentConnected } from "@/hooks/useAgentConnected"
 import { useTopologyStore } from "@/store/topology"
 import type { MachineData } from "@/store/topology"
 import { Badge } from "@/components/ui/badge"
@@ -71,6 +72,27 @@ function LifecycleBadge({ lifecycle }: { lifecycle: Lifecycle }) {
       </Badge>
     )
   return null
+}
+
+/**
+ * Live orchestrator link status for a node with a minted agent identity —
+ * green while the agent's phone-home socket is up, red the instant it drops
+ * (pushed over the presence WebSocket, so no polling lag). Only rendered once
+ * a real VM exists (`orchestratorVmId` rides back on the createVm op result).
+ */
+function AgentStatusDot({ vmId }: { vmId: string }) {
+  const connected = useAgentConnected(vmId)
+  return (
+    <span
+      title={connected ? "Orchestrator connected" : "Orchestrator offline"}
+      className={cn(
+        "h-2 w-2 shrink-0 rounded-full",
+        connected
+          ? "bg-emerald-500 shadow-[0_0_6px_1px_rgba(16,185,129,0.7)]"
+          : "bg-red-500 shadow-[0_0_6px_1px_rgba(239,68,68,0.6)]",
+      )}
+    />
+  )
 }
 
 /** Amber badge shown on a deployed node whose config has since been edited — deploy skips these in v1, so this is purely informational. */
@@ -178,6 +200,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
       >
         <Icon className={cn("h-4 w-4 shrink-0", def?.accent ?? "text-muted-foreground")} />
         <span className="text-xs font-semibold truncate flex-1">{data.name}</span>
+        {data.orchestratorVmId && <AgentStatusDot vmId={data.orchestratorVmId} />}
       </div>
 
       {/* Body */}
