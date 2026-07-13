@@ -86,6 +86,7 @@ _COMMAND_CAPABILITIES: dict[str, Capability] = {
     "domain.join": Capability.VM_PROVISION,
     "domain.verify": Capability.VM_READ,
     "system.reboot": Capability.VM_PROVISION,
+    "system.boot_info": Capability.VM_READ,
     "dns.set_client": Capability.VM_PROVISION,
     "dns.create_record": Capability.VM_PROVISION,
     "cert.addstore": Capability.VM_PROVISION,
