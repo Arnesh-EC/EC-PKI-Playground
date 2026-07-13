@@ -56,7 +56,22 @@ class ScriptedDispatch:
         return outcome
 
 
-def _wait(dispatch, clock, *, timeout_s=10_000, on_phase=None):
+class FakeLiveness:
+    """Just the liveness-key ``.get`` the offline reconnect poll reads.
+    ``answers`` scripts the first polls (True = key present); once drained the
+    key is always present, so a poll never spins to the deadline by accident."""
+
+    def __init__(self, answers=()):
+        self.answers = list(answers)
+        self.gets = 0
+
+    def get(self, _key):
+        self.gets += 1
+        live = self.answers.pop(0) if self.answers else True
+        return b"1" if live else None
+
+
+def _wait(dispatch, clock, *, timeout_s=10_000, on_phase=None, client=None):
     return wait_for_settled_boot(
         "vm-1",
         db=object(),
@@ -64,7 +79,7 @@ def _wait(dispatch, clock, *, timeout_s=10_000, on_phase=None):
         role="guest",
         job_key_prefix="job-op-bootprobe",
         on_phase=on_phase,
-        client=object(),
+        client=client if client is not None else FakeLiveness(),
         sleep=clock.sleep,
         monotonic=clock.monotonic,
         dispatch=dispatch,
@@ -206,6 +221,44 @@ def test_other_dispatch_errors_keep_probing():
         ]
     )
     _wait(dispatch, clock)
+    assert len(dispatch.calls) == 3
+
+
+def test_probe_timeout_preserves_the_candidate():
+    """A hung probe (guest-side PowerShell wedge, 60s dispatch timeout) says
+    nothing about a reboot — the settle candidate must survive it, and the
+    phase text must move so the UI never freezes on 'confirming'."""
+    clock = FakeClock()
+    phases = []
+    dispatch = ScriptedDispatch(
+        [
+            _info(120),  # candidate
+            DispatchError("agent command 'system.boot_info' timed out after 60s"),
+            _info(205),  # same boot, uptime advanced through the hang — confirmed
+        ]
+    )
+    _wait(dispatch, clock, on_phase=phases.append)
+    # 3 probes, not 4: the timed-out probe did not reset the candidate, so the
+    # next successful probe confirmed directly.
+    assert len(dispatch.calls) == 3
+    assert any("probe timed out" in p for p in phases)
+
+
+def test_offline_agent_reprobes_promptly_on_reconnect():
+    """While the agent is offline the gate polls the liveness key (~2s) and
+    re-probes the moment it reappears — not up to a full probe interval later."""
+    clock = FakeClock()
+    phases = []
+    client = FakeLiveness(answers=[False, False, False, True])
+    dispatch = ScriptedDispatch(
+        [AgentUnreachableError("mid-reboot"), _info(90), _info(135)]
+    )
+    _wait(dispatch, clock, on_phase=phases.append, client=client)
+    assert any("agent offline" in p for p in phases)
+    assert any("Agent back online" in p for p in phases)
+    # Three 2s reconnect polls, then the re-probe and one 45s confirm gap —
+    # no 20s probe-interval sleep anywhere in the offline path.
+    assert clock.t == pytest.approx(6.0 + 45.0)
     assert len(dispatch.calls) == 3
 
 

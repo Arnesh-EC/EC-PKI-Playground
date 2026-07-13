@@ -316,6 +316,10 @@ _BOOT_PROBE_CONFIRM_GAP_S = 45.0
 _BOOT_UPTIME_FLOOR_S = 60
 #: Per-dispatch timeout for one boot_info probe.
 _BOOT_PROBE_TIMEOUT_S = 60
+#: Liveness-key poll gap while the agent is offline mid-settle — the moment it
+#: reconnects the next probe dispatches, instead of waiting out the probe
+#: interval.
+_BOOT_RECONNECT_POLL_S = 2.0
 #: Tolerance when checking the confirm probe's uptime advanced consistently.
 _BOOT_CONFIRM_SLACK_S = 10
 #: Forced reboots before giving up on a finalize task that never unregisters.
@@ -355,7 +359,10 @@ def wait_for_settled_boot(
       confirmed by a second probe ``_BOOT_PROBE_CONFIRM_GAP_S`` later on the
       *same* boot (uptime advanced consistently) — defeating the finalize's
       brief unregister→reboot window.
-    * agent unreachable / dispatch hiccup → transient (mid-reboot); retry.
+    * agent unreachable → mid-reboot; poll the liveness key and re-probe the
+      moment it reconnects. A probe timeout keeps the settled-boot candidate —
+      it says nothing about a reboot, and the same-boot uptime check catches a
+      stale candidate on the next probe.
     * the agent doesn't know ``system.boot_info`` (legacy binary) → fall back
       to :func:`wait_for_stable_agent` for the remaining budget.
 
@@ -364,6 +371,7 @@ def wait_for_settled_boot(
     ``on_phase(text)`` receives human-readable progress; observational only.
     """
     _dispatch = dispatch or dispatch_and_wait
+    r = client or transport._client
 
     def _phase(text: str) -> None:
         if on_phase is not None:
@@ -392,7 +400,14 @@ def wait_for_settled_boot(
         except AgentUnreachableError:
             candidate = None
             _phase("Waiting for boot to settle — agent offline (rebooting)")
-            sleep(_BOOT_PROBE_INTERVAL_S)
+            # Poll the liveness key instead of blind-sleeping the probe
+            # interval: the next probe dispatches (and the phase flips) within
+            # ~2s of the agent reconnecting.
+            while monotonic() < deadline:
+                if r.get(agent_conn_key(vm_id)) is not None:
+                    _phase("Agent back online — checking boot state")
+                    break
+                sleep(_BOOT_RECONNECT_POLL_S)
             continue
         except DispatchError as exc:
             if _BOOT_INFO_UNKNOWN in str(exc):
@@ -407,8 +422,12 @@ def wait_for_settled_boot(
                     sleep=sleep,
                     monotonic=monotonic,
                 )
-            candidate = None
+            # A probe timeout says nothing about a reboot — keep the candidate
+            # (the same-boot uptime check already invalidates a stale one after
+            # a real reboot) and keep the phase text moving so the UI never
+            # freezes on the previous state.
             logger.warning("boot_info probe for %s failed: %s", vm_id, exc)
+            _phase("Waiting for boot to settle — probe timed out, retrying")
             sleep(_BOOT_PROBE_INTERVAL_S)
             continue
 
