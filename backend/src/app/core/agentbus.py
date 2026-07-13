@@ -47,6 +47,11 @@ def agent_conn_key(vm_id: str) -> str:
 #: Liveness TTL — refreshed by the connect handler's keepalive well inside it.
 AGENT_CONN_TTL_SECONDS = 90
 
+#: Consecutive ~1s dispatch polls with the liveness key absent before a
+#: non-reboot command is declared dead. Long enough to ride out a redis blip,
+#: far shorter than a step's ``timeout_s`` (which would otherwise hang the op).
+_DISPATCH_LIVENESS_GRACE_POLLS = 10
+
 
 class AgentUnreachableError(Exception):
     """No live agent connection for the target vm_id (never phoned home, or its
@@ -73,6 +78,7 @@ def dispatch_and_wait(
     role: str,
     timeout_s: int,
     secret_keys: tuple[str, ...] = (),
+    expect_disconnect: bool = False,
     client: "redis.Redis | None" = None,
 ) -> dict:
     """Dispatch one command to ``vm_id``'s agent and block for its terminal
@@ -84,6 +90,12 @@ def dispatch_and_wait(
     (the step ran before the worker was redelivered this task), its result is
     returned without re-dispatching — deterministic per-step job ids make this
     exact.
+
+    ``expect_disconnect`` marks the reboot step, whose terminal frame is relayed
+    before the socket legitimately drops; for every other command a liveness key
+    that vanishes mid-wait means the agent died (e.g. an unexpected reboot), so
+    we raise :class:`AgentUnreachableError` within seconds instead of hanging to
+    ``timeout_s``.
     """
     r = client or transport._client  # one shared sync pool
 
@@ -115,6 +127,7 @@ def dispatch_and_wait(
         r.publish(DISPATCH_CHANNEL, request)
 
         deadline = time.monotonic() + timeout_s
+        liveness_misses = 0
         while time.monotonic() < deadline:
             message = pubsub.get_message(timeout=1.0)
             if message is None:
@@ -125,7 +138,20 @@ def dispatch_and_wait(
                     terminal = _terminal_result(json.loads(snap_raw))
                     if terminal is not None:
                         return terminal
+                # Fail fast if the agent drops mid-command (unless a reboot is
+                # expected) — otherwise a killed command hangs until timeout_s.
+                if not expect_disconnect:
+                    if r.get(agent_conn_key(vm_id)) is None:
+                        liveness_misses += 1
+                        if liveness_misses >= _DISPATCH_LIVENESS_GRACE_POLLS:
+                            raise AgentUnreachableError(
+                                f"agent '{vm_id}' disconnected while running "
+                                f"'{command}'"
+                            )
+                    else:
+                        liveness_misses = 0
                 continue
+            liveness_misses = 0
             frame = json.loads(message["data"])
             outcome = _frame_outcome(frame)
             if outcome is None:
