@@ -607,7 +607,9 @@ export function edgeStyle(type: EdgeType, opts?: EdgeStyleOptions): EdgeStylePro
           ...(opts?.rootIssuer ? { strokeDasharray: "6 4" } : {}),
         },
         animated: false,
-        label: opts?.rootIssuer ? "signs (manual transfer)" : "issues",
+        label: opts?.rootIssuer
+          ? "issues CA cert · offline relay"
+          : "issues CA certificate",
         labelStyle: { fill: "#f59e0b", fontSize: 11 },
       }
     case EDGE_TYPE.webServerCert:
@@ -618,7 +620,7 @@ export function edgeStyle(type: EdgeType, opts?: EdgeStyleOptions): EdgeStylePro
           ...(opts?.rootIssuer ? { strokeDasharray: "6 4" } : {}),
         },
         animated: false,
-        label: "publishes CDP/AIA",
+        label: "publishes CDP/AIA · enables OCSP",
         labelStyle: { fill: "#10b981", fontSize: 11 },
       }
     case EDGE_TYPE.network:

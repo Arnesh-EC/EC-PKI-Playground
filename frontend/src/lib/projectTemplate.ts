@@ -38,19 +38,20 @@ function envDefault(key: string, fallback: string): string {
 const PKI = {
   domainName: envDefault("VITE_PKI_DOMAIN_NAME", "EncryptionConsulting.com"),
   netbiosName: envDefault("VITE_PKI_NETBIOS_NAME", "ENCRYPTIONCONSU"),
-  forestLevel: envDefault("VITE_PKI_FOREST_LEVEL", "Windows Server 2022"),
+  forestLevel: envDefault("VITE_PKI_FOREST_LEVEL", "Windows Server 2016"),
   domainAdminPassword: envDefault("VITE_PKI_DOMAIN_ADMIN_PASSWORD", "EcPkiLab#2026Key"),
   rootCaCn: envDefault("VITE_PKI_ROOT_CA_CN", "EC-Root-CA"),
   issuingCaCn: envDefault("VITE_PKI_ISSUING_CA_CN", "EC-Issuing-CA"),
   cpsUrl: envDefault("VITE_PKI_CPS_URL", "http://pki.EncryptionConsulting.com/cps.txt"),
+  keyAlgorithm: envDefault("VITE_PKI_KEY_ALGORITHM", "ML-DSA-87"),
 }
 
 /**
  * Resets the working topology + staging stores, then builds a two-tier ADCS
  * lab: an offline Root CA signing an enterprise Issuing CA, a Domain
- * Controller, an IIS web server publishing CDP/AIA, and a Windows client — the
- * CA/web wired up and the members domain-joined. Every VM is left `staged`, so
- * the project is one Deploy away from real clones.
+ * Controller, and an IIS web server publishing CDP/AIA. The CA/web are wired
+ * up and the online members domain-joined. Every VM is left `staged`, so the
+ * project is one Deploy away from real clones.
  */
 export function buildPkiTemplateIntoStores() {
   // Fresh slate — clear any graph the previous project left in the stores.
@@ -61,6 +62,7 @@ export function buildPkiTemplateIntoStores() {
   // node back off the store before configuring it (which stages its createVm).
   const addConfigured = (
     typeId: string,
+    name: string,
     position: { x: number; y: number },
     config?: Record<string, string>,
   ): string | null => {
@@ -68,37 +70,37 @@ export function buildPkiTemplateIntoStores() {
     store.addNode(typeId, position)
     const node = useTopologyStore.getState().nodes.at(-1)
     if (!node) return null
+    useTopologyStore.getState().renameNode(node.id, name)
     useTopologyStore.getState().configureNode(node.id, config)
     return node.id
   }
 
   const rootId = addConfigured(
     "certificateAuthority",
+    "CA01",
     { x: 180, y: 100 },
     {
       caType: "Root",
       commonName: PKI.rootCaCn,
-      keyAlgorithm: "RSA",
-      keyLength: "4096",
-      hashAlgorithm: "SHA256",
+      keyAlgorithm: PKI.keyAlgorithm,
       validityYears: "20",
     },
   )
   const issuingId = addConfigured(
     "certificateAuthority",
+    "CA02",
     { x: 500, y: 140 },
     {
       caType: "Issuing",
       commonName: PKI.issuingCaCn,
-      keyAlgorithm: "RSA",
-      keyLength: "2048",
-      hashAlgorithm: "SHA256",
+      keyAlgorithm: PKI.keyAlgorithm,
       validityYears: "10",
       cpsUrl: PKI.cpsUrl,
     },
   )
   const dcId = addConfigured(
     "domainController",
+    "DC01",
     { x: 500, y: 340 },
     {
       domainName: PKI.domainName,
@@ -109,12 +111,10 @@ export function buildPkiTemplateIntoStores() {
   )
   const webId = addConfigured(
     "webServer",
+    "SRV1",
     { x: 740, y: 340 },
     { certEnrollPath: "C:\\CertEnroll", enableOcsp: "Enabled", ocspRefreshMinutes: "15" },
   )
-  // Client template has no config fields.
-  const clientId = addConfigured("client", { x: 500, y: 560 })
-
   // Offline Root signs the Issuing CA (a dashed "manual transfer" edge).
   if (rootId && issuingId) {
     useTopologyStore.getState().connect({
@@ -134,13 +134,13 @@ export function buildPkiTemplateIntoStores() {
     })
   }
 
-  // Enrol the issuing CA, web server and client into the DC's domain (the
-  // offline root stays out — roots must never be domain-joined).
+  // Enrol the issuing CA and web server into the DC's domain (the offline root
+  // stays out — roots must never be domain-joined).
   if (dcId) {
     const dc = useTopologyStore.getState().nodes.find((n) => n.id === dcId)
     if (dc) {
       const domainName = domainLabel(dc)
-      const members = [issuingId, webId, clientId].filter(
+      const members = [issuingId, webId].filter(
         (id): id is string => !!id,
       )
       const changes: DomainSyncChange[] = members

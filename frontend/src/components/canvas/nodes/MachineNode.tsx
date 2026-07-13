@@ -148,7 +148,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
   return (
     <div
       className={cn(
-        "min-w-[160px] rounded-xl border bg-card text-card-foreground shadow-sm select-none",
+        "w-[192px] max-w-[192px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm select-none",
         "transition-shadow",
         selected && "ring-2 ring-primary shadow-md",
         data.lifecycle === LIFECYCLE.draft && "border-amber-500/40",
