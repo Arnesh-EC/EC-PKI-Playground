@@ -240,6 +240,30 @@ def _sweep_stale_agents_sync(db) -> None:
     )
 
 
+def _cleanup_failed_clone(conn, db, vm_name: str, ip: str | None) -> None:
+    """Roll back a failed createVm op without orphaning a live VM.
+
+    The IP allocation and the just-minted agent identity are reclaimed only
+    when the VM is provably absent from inventory. A clone that fails AFTER
+    the VM was created (e.g. a vSphere fault while reading back the moid)
+    leaves a booted VM holding both the address and the baked-in token —
+    wiping them would strand the agent (403 forever, the hash is gone) and
+    let a later clone claim an address still in use. When absence can't be
+    proven (the inventory check itself fails), everything is kept; teardown
+    is the reclaim path either way.
+    """
+    try:
+        vm_absent = get_vm_by_name(conn.content, vm_name) is None
+    except Exception:  # noqa: BLE001 — can't prove absence; keep identity + IP
+        vm_absent = False
+    if vm_absent:
+        if ip is not None:
+            release_ip_sync(db, vm_name)
+        _registry_upsert_sync(db, vm_name, status="error", ip=None, agent=None)
+    else:
+        _registry_upsert_sync(db, vm_name, status="error")
+
+
 def _set_provision_state(db, vm_name: str, provision_state: str) -> None:
     db["vm_registry"].update_one(
         {"vmName": vm_name},
@@ -553,19 +577,12 @@ def _run_clone_op(
         return False
     except VmkitError as exc:
         status, detail = map_vmkit_error(exc)
-        if ip is not None:
-            release_ip_sync(db, vm_name)
-        # Drop the just-minted identity: this clone never produced a booting VM,
-        # so no live agent holds the token. (The VmExists branch above is the
-        # deliberate exception — that VM may be running with it.)
-        _registry_upsert_sync(db, vm_name, status="error", ip=None, agent=None)
+        _cleanup_failed_clone(conn, db, vm_name, ip)
         state[op.id] = OpRunState(status="error", detail=f"{status}: {detail}")
         push()
         return False
     except Exception as exc:  # noqa: BLE001 — surface as an op-level failure, not a plan crash
-        if ip is not None:
-            release_ip_sync(db, vm_name)
-        _registry_upsert_sync(db, vm_name, status="error", ip=None, agent=None)
+        _cleanup_failed_clone(conn, db, vm_name, ip)
         state[op.id] = OpRunState(status="error", detail=str(exc))
         push()
         return False
