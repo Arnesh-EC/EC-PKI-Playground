@@ -51,6 +51,7 @@ from app.core.authz import (
 from app.core.db import vm_registry_col
 from app.core.jobs import transport
 from app.core.jobs.models import DoneMsg, ErrorMsg, JobStatus, ProgressMsg, QueuedMsg
+from app.routers.ws import send_json_or_disconnect
 
 router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 
@@ -326,7 +327,7 @@ async def watch_agents(websocket: WebSocket, token: str | None = None) -> None:
         while True:
             vm_ids = await _visible_agent_vm_ids(user)
             if vm_ids != last:
-                await websocket.send_json({"type": "agents", "vm_ids": vm_ids})
+                await send_json_or_disconnect(websocket, {"type": "agents", "vm_ids": vm_ids})
                 last = vm_ids
             done, _ = await asyncio.wait(
                 {signal, receiver},

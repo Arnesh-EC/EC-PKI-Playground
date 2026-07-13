@@ -25,6 +25,20 @@ from app.core.jobs.models import TERMINAL_TYPES
 router = APIRouter(prefix="/ws", tags=["ws"])
 
 
+async def send_json_or_disconnect(websocket: WebSocket, payload: dict) -> None:
+    """``send_json`` that treats a send racing the client's close as a disconnect.
+
+    When the client closes, the close handshake completes before the app's
+    pending send; uvicorn then raises a bare ``RuntimeError`` (not
+    ``WebSocketDisconnect``) — normalize it so handlers' existing
+    ``except WebSocketDisconnect`` cleanup applies.
+    """
+    try:
+        await websocket.send_json(payload)
+    except RuntimeError as exc:
+        raise WebSocketDisconnect(code=1006) from exc
+
+
 @router.websocket("/jobs/{job_id}")
 async def job_progress(websocket: WebSocket, job_id: str, token: str | None = None) -> None:
     if await resolve_user_token(token) is None:
@@ -48,7 +62,7 @@ async def job_progress(websocket: WebSocket, job_id: str, token: str | None = No
 
         last = snapshot["last"]
         if last is not None:
-            await websocket.send_json(last)
+            await send_json_or_disconnect(websocket, last)
             if last["type"] in TERMINAL_TYPES:
                 return
 
@@ -56,7 +70,7 @@ async def job_progress(websocket: WebSocket, job_id: str, token: str | None = No
             if raw["type"] != "message":
                 continue
             msg = json.loads(raw["data"])
-            await websocket.send_json(msg)
+            await send_json_or_disconnect(websocket, msg)
             if msg["type"] in TERMINAL_TYPES:
                 break
     except WebSocketDisconnect:
