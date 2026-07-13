@@ -27,6 +27,7 @@ so a reboot step resumes once the agent phones home again.
 import json
 import logging
 import time
+from collections.abc import Callable
 
 import redis
 
@@ -79,6 +80,7 @@ def dispatch_and_wait(
     timeout_s: int,
     secret_keys: tuple[str, ...] = (),
     expect_disconnect: bool = False,
+    on_progress: "Callable[[str | None, float | None], None] | None" = None,
     client: "redis.Redis | None" = None,
 ) -> dict:
     """Dispatch one command to ``vm_id``'s agent and block for its terminal
@@ -96,6 +98,11 @@ def dispatch_and_wait(
     that vanishes mid-wait means the agent died (e.g. an unexpected reboot), so
     we raise :class:`AgentUnreachableError` within seconds instead of hanging to
     ``timeout_s``.
+
+    ``on_progress(phase, percent)`` is invoked for every non-terminal frame the
+    agent relays for this job — the live sub-step feed the plan runner folds
+    into the op state. Purely observational: its exceptions are logged and
+    swallowed so a UI callback can never kill a dispatch.
     """
     r = client or transport._client  # one shared sync pool
 
@@ -155,6 +162,11 @@ def dispatch_and_wait(
             frame = json.loads(message["data"])
             outcome = _frame_outcome(frame)
             if outcome is None:
+                if on_progress is not None:
+                    try:
+                        on_progress(frame.get("phase"), frame.get("percent"))
+                    except Exception:  # noqa: BLE001 — observational only
+                        logger.exception("on_progress callback failed")
                 continue  # progress frame — keep waiting
             ok, payload = outcome
             if ok:
