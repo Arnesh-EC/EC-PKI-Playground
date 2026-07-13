@@ -240,13 +240,41 @@ export interface PlanOpPayload {
   dependsOn: string[]
 }
 
-export const deployPlan = (ops: PlanOpPayload[], projectId?: string | null) =>
+export type TopologyRole =
+  | "domainController"
+  | "rootCa"
+  | "issuingCa"
+  | "webServer"
+  | "client"
+  | "standalone"
+
+export interface TopologyPayload {
+  version: 1
+  nodes: Array<{
+    id: string
+    name: string
+    role: TopologyRole
+    config: Record<string, string>
+  }>
+  edges: Array<{
+    id: string
+    kind: "domainMembership" | "caParent" | "caPublication"
+    source: string
+    target: string
+  }>
+}
+
+export const deployPlan = (
+  ops: PlanOpPayload[],
+  topology: TopologyPayload,
+  projectId?: string | null,
+) =>
   request<JobAccepted>(URLS.deploy, {
     method: "POST",
     // The backend derives guest VM names as guest-<user>-<project>-<machine>,
     // so the active project rides along as the <project> segment (required for
     // guest clones; ignored for operators, who keep free-form names).
-    body: JSON.stringify({ ops, ...(projectId ? { projectId } : {}) }),
+    body: JSON.stringify({ ops, topology, ...(projectId ? { projectId } : {}) }),
   })
 
 // --- /iso --------------------------------------------------------------------
@@ -362,4 +390,3 @@ export const dispatchOrchestratorCommand = (
     method: "POST",
     body: JSON.stringify({ command, params }),
   })
-

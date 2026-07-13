@@ -30,6 +30,7 @@ import {
   type StagedOp,
 } from "@/lib/staging"
 import { domainJoinEdge } from "@/lib/topology"
+import { buildDeployTopology } from "@/lib/deployTopology"
 import { openJobSocket, type OpRunState } from "@/lib/ws"
 import { useAgentsStore } from "@/store/agents"
 import { useAuthStore } from "@/store/auth"
@@ -445,7 +446,9 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
     set({ ops: pruned.map((op) => ({ ...op, status: OP_STATUS.pending })) })
 
     const projectId = useProjectsStore.getState().activeProjectId
-    deployPlan(payload, projectId)
+    const topologyState = useTopologyStore.getState()
+    const topology = buildDeployTopology(topologyState.nodes, topologyState.edges)
+    deployPlan(payload, topology, projectId)
       .then(({ job_id }) => {
         set({ deployJobId: job_id })
         attachPlanSocket(job_id, token)
