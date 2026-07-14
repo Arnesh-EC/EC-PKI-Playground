@@ -143,7 +143,16 @@ export interface OperatorSettings {
   cloneBase: string
   cloneDatastore: string
   cloneGuestOs: string
+  cloneNetwork: string
   cloneMaxUsagePct: number
+  infrastructureProfiles: InfrastructureProfile[]
+  guestIpStart: string | null
+  guestIpEnd: string | null
+  guestPrefix: number
+  guestGateway: string | null
+  guestDns1: string | null
+  guestDns2: string | null
+  guestDnsSuffix: string | null
 }
 
 export interface OperatorSettingsUpdate {
@@ -154,7 +163,30 @@ export interface OperatorSettingsUpdate {
   cloneBase?: string
   cloneDatastore?: string
   cloneGuestOs?: string
+  cloneNetwork?: string
   cloneMaxUsagePct?: number
+  infrastructureProfiles?: InfrastructureProfile[]
+  guestIpStart?: string
+  guestIpEnd?: string
+  guestPrefix?: number
+  guestGateway?: string
+  guestDns1?: string
+  guestDns2?: string
+  guestDnsSuffix?: string
+}
+
+export type PkiRole = "domainController" | "rootCa" | "issuingCa" | "webServer"
+
+export interface InfrastructureProfile {
+  role: PkiRole
+  base: string
+  datastore: string
+  expectedGuestOs: string
+  network: string
+  cpus: number
+  memoryMb: number
+  systemDiskGb: number
+  maxUsagePct: number
 }
 
 export interface GoldenImagePreflightCheck {
@@ -195,6 +227,43 @@ export const validateGoldenImage = (cloneCount = 1) =>
   request<GoldenImagePreflight>(URLS.settings.validateGoldenImage, {
     method: "POST",
     body: JSON.stringify({ cloneCount }),
+  })
+
+export interface InfrastructurePreflightCheck {
+  key: "vmNames" | "image" | "guestOs" | "network" | "datastore" | "capacity"
+  ok: boolean
+  detail: string
+  role: PkiRole | null
+  datastore: string | null
+}
+
+export interface InfrastructurePreflight {
+  ready: boolean
+  checkedAt: number
+  snapshotId: string
+  esxiInstanceUuid: string | null
+  machines: Array<InfrastructureProfile & {
+    name: string
+    baseMoid: string | null
+    baseChangeVersion: string | null
+    actualGuestOs: string | null
+    reservedBytes: number | null
+  }>
+  datastores: Array<{
+    datastore: string
+    capacityBytes: number | null
+    freeBytes: number | null
+    reservedBytes: number | null
+    projectedUsagePct: number | null
+    maxUsagePct: number
+  }>
+  checks: InfrastructurePreflightCheck[]
+}
+
+export const validateInfrastructure = () =>
+  request<InfrastructurePreflight>(URLS.settings.validateInfrastructure, {
+    method: "POST",
+    body: JSON.stringify({}),
   })
 
 // --- /generate/hostname ----------------------------------------------------

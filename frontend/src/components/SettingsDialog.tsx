@@ -16,8 +16,9 @@ import { useIsOperator } from "@/hooks/useIsOperator"
 import {
   getSettings,
   updateSettings,
-  validateGoldenImage,
-  type GoldenImagePreflight,
+  validateInfrastructure,
+  type InfrastructurePreflight,
+  type InfrastructureProfile,
   type OperatorSettingsUpdate,
 } from "@/lib/api"
 
@@ -29,9 +30,42 @@ interface FormState {
   cloneBase: string
   cloneDatastore: string
   cloneGuestOs: string
+  cloneNetwork: string
   cloneMaxUsagePct: string
+  guestIpStart: string
+  guestIpEnd: string
+  guestPrefix: string
+  guestGateway: string
+  guestDns1: string
+  guestDns2: string
+  guestDnsSuffix: string
+  profiles: InfrastructureProfile[]
   hasPassword: boolean
 }
+
+const ROLE_LABELS = {
+  domainController: "Domain controller",
+  rootCa: "Offline root CA",
+  issuingCa: "Issuing CA",
+  webServer: "Web and OCSP server",
+} as const
+
+const DEFAULT_PROFILES: InfrastructureProfile[] = [
+  ["domainController", 2, 4096, 60],
+  ["rootCa", 2, 4096, 60],
+  ["issuingCa", 4, 8192, 80],
+  ["webServer", 4, 8192, 80],
+].map(([role, cpus, memoryMb, systemDiskGb]) => ({
+  role: role as InfrastructureProfile["role"],
+  base: "ws-2025-base",
+  datastore: "datastore1",
+  expectedGuestOs: "windows2022srvNext-64",
+  network: "VM Network",
+  cpus: cpus as number,
+  memoryMb: memoryMb as number,
+  systemDiskGb: systemDiskGb as number,
+  maxUsagePct: 80,
+}))
 
 const EMPTY_FORM: FormState = {
   esxiHost: "",
@@ -41,7 +75,16 @@ const EMPTY_FORM: FormState = {
   cloneBase: "ws-2025-base",
   cloneDatastore: "datastore1",
   cloneGuestOs: "windows2022srvNext-64",
+  cloneNetwork: "VM Network",
   cloneMaxUsagePct: "80",
+  guestIpStart: "",
+  guestIpEnd: "",
+  guestPrefix: "24",
+  guestGateway: "",
+  guestDns1: "",
+  guestDns2: "",
+  guestDnsSuffix: "",
+  profiles: DEFAULT_PROFILES,
   hasPassword: false,
 }
 
@@ -68,7 +111,7 @@ export function SettingsDialog() {
   const [saving, setSaving] = useState(false)
   const [validating, setValidating] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [preflight, setPreflight] = useState<GoldenImagePreflight | null>(null)
+  const [preflight, setPreflight] = useState<InfrastructurePreflight | null>(null)
 
   useEffect(() => {
     if (!open || !isOperator) return
@@ -84,7 +127,25 @@ export function SettingsDialog() {
           cloneBase: settings.cloneBase ?? "ws-2025-base",
           cloneDatastore: settings.cloneDatastore ?? "datastore1",
           cloneGuestOs: settings.cloneGuestOs ?? "windows2022srvNext-64",
+          cloneNetwork: settings.cloneNetwork ?? "VM Network",
           cloneMaxUsagePct: String(settings.cloneMaxUsagePct ?? 80),
+          guestIpStart: settings.guestIpStart ?? "",
+          guestIpEnd: settings.guestIpEnd ?? "",
+          guestPrefix: String(settings.guestPrefix ?? 24),
+          guestGateway: settings.guestGateway ?? "",
+          guestDns1: settings.guestDns1 ?? "",
+          guestDns2: settings.guestDns2 ?? "",
+          guestDnsSuffix: settings.guestDnsSuffix ?? "",
+          profiles: settings.infrastructureProfiles?.length === 4
+            ? settings.infrastructureProfiles
+            : DEFAULT_PROFILES.map((profile) => ({
+                ...profile,
+                base: settings.cloneBase ?? profile.base,
+                datastore: settings.cloneDatastore ?? profile.datastore,
+                expectedGuestOs: settings.cloneGuestOs ?? profile.expectedGuestOs,
+                network: settings.cloneNetwork ?? profile.network,
+                maxUsagePct: settings.cloneMaxUsagePct ?? profile.maxUsagePct,
+              })),
           hasPassword: settings.hasPassword,
         })
       })
@@ -115,6 +176,27 @@ export function SettingsDialog() {
     setPreflight(null)
   }
 
+  function patchProfile(
+    role: InfrastructureProfile["role"],
+    field: keyof Omit<InfrastructureProfile, "role">,
+    value: string,
+  ) {
+    setForm((current) => ({
+      ...current,
+      profiles: current.profiles.map((profile) =>
+        profile.role === role
+          ? {
+              ...profile,
+              [field]: ["cpus", "memoryMb", "systemDiskGb", "maxUsagePct"].includes(field)
+                ? Number(value)
+                : value,
+            }
+          : profile,
+      ),
+    }))
+    setPreflight(null)
+  }
+
   function payload(): OperatorSettingsUpdate {
     return {
       esxiHost: form.esxiHost.trim(),
@@ -124,7 +206,16 @@ export function SettingsDialog() {
       cloneBase: form.cloneBase.trim(),
       cloneDatastore: form.cloneDatastore.trim(),
       cloneGuestOs: form.cloneGuestOs.trim(),
+      cloneNetwork: form.cloneNetwork.trim(),
       cloneMaxUsagePct: Number(form.cloneMaxUsagePct),
+      guestIpStart: form.guestIpStart.trim(),
+      guestIpEnd: form.guestIpEnd.trim(),
+      guestPrefix: Number(form.guestPrefix),
+      guestGateway: form.guestGateway.trim(),
+      guestDns1: form.guestDns1.trim(),
+      guestDns2: form.guestDns2.trim(),
+      guestDnsSuffix: form.guestDnsSuffix.trim(),
+      infrastructureProfiles: form.profiles,
     }
   }
 
@@ -136,8 +227,22 @@ export function SettingsDialog() {
     !!form.cloneBase.trim() &&
     !!form.cloneDatastore.trim() &&
     !!form.cloneGuestOs.trim() &&
+    !!form.cloneNetwork.trim() &&
     Number(form.cloneMaxUsagePct) > 0 &&
-    Number(form.cloneMaxUsagePct) <= 100
+    Number(form.cloneMaxUsagePct) <= 100 &&
+    !!form.guestIpStart.trim() &&
+    !!form.guestIpEnd.trim() &&
+    Number(form.guestPrefix) >= 1 &&
+    Number(form.guestPrefix) <= 32 &&
+    !!form.guestGateway.trim() &&
+    !!form.guestDns1.trim() &&
+    form.profiles.every((profile) =>
+      !!profile.base.trim() && !!profile.datastore.trim() &&
+      !!profile.expectedGuestOs.trim() && !!profile.network.trim() &&
+      profile.cpus > 0 && profile.memoryMb >= 1024 &&
+      profile.systemDiskGb >= 32 && profile.maxUsagePct > 0 &&
+      profile.maxUsagePct <= 100,
+    )
 
   async function save(showToast = true) {
     setSaving(true)
@@ -164,10 +269,10 @@ export function SettingsDialog() {
     if (!saved) return
     setValidating(true)
     try {
-      const result = await validateGoldenImage(1)
+      const result = await validateInfrastructure()
       setPreflight(result)
-      if (result.ready) toast.success("Golden image is deploy-ready.")
-      else toast.error("Golden image validation found blocking issues.")
+      if (result.ready) toast.success("Infrastructure is deploy-ready.")
+      else toast.error("Infrastructure validation found blocking issues.")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Validation failed.")
     } finally {
@@ -191,8 +296,8 @@ export function SettingsDialog() {
             Infrastructure settings
           </AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-xs text-muted-foreground">
-            Select the patched Windows Server image used by guided deploys and
-            prove it is ready before cloning.
+            Configure ESXi, guest addressing, and per-role placement, then prove
+            the complete four-machine reservation before cloning.
           </AlertDialog.Description>
 
           {loading ? (
@@ -231,6 +336,21 @@ export function SettingsDialog() {
 
               <section className="border-t pt-5">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Guest network
+                </h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-1.5"><Label htmlFor="guest-start">IP range start</Label><Input id="guest-start" value={form.guestIpStart} onChange={(event) => patch("guestIpStart", event.target.value)} /></div>
+                  <div className="space-y-1.5"><Label htmlFor="guest-end">IP range end</Label><Input id="guest-end" value={form.guestIpEnd} onChange={(event) => patch("guestIpEnd", event.target.value)} /></div>
+                  <div className="space-y-1.5"><Label htmlFor="guest-prefix">Prefix</Label><Input id="guest-prefix" type="number" min="1" max="32" value={form.guestPrefix} onChange={(event) => patch("guestPrefix", event.target.value)} /></div>
+                  <div className="space-y-1.5"><Label htmlFor="guest-gateway">Gateway</Label><Input id="guest-gateway" value={form.guestGateway} onChange={(event) => patch("guestGateway", event.target.value)} /></div>
+                  <div className="space-y-1.5"><Label htmlFor="guest-dns1">Primary DNS</Label><Input id="guest-dns1" value={form.guestDns1} onChange={(event) => patch("guestDns1", event.target.value)} /></div>
+                  <div className="space-y-1.5"><Label htmlFor="guest-dns2">Secondary DNS</Label><Input id="guest-dns2" value={form.guestDns2} onChange={(event) => patch("guestDns2", event.target.value)} /></div>
+                  <div className="space-y-1.5 sm:col-span-3"><Label htmlFor="guest-suffix">DNS suffix</Label><Input id="guest-suffix" value={form.guestDnsSuffix} onChange={(event) => patch("guestDnsSuffix", event.target.value)} placeholder="encon.pki" /></div>
+                </div>
+              </section>
+
+              <section className="border-t pt-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Windows Server golden image
                 </h3>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -253,6 +373,29 @@ export function SettingsDialog() {
                 </div>
               </section>
 
+              <section className="border-t pt-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Role images and sizing
+                </h3>
+                <div className="mt-3 space-y-4">
+                  {form.profiles.map((profile) => (
+                    <div key={profile.role} className="rounded-lg border p-3">
+                      <h4 className="text-xs font-medium">{ROLE_LABELS[profile.role]}</h4>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                        <div className="space-y-1.5 sm:col-span-2"><Label>Image</Label><Input value={profile.base} onChange={(event) => patchProfile(profile.role, "base", event.target.value)} /></div>
+                        <div className="space-y-1.5"><Label>Datastore</Label><Input value={profile.datastore} onChange={(event) => patchProfile(profile.role, "datastore", event.target.value)} /></div>
+                        <div className="space-y-1.5"><Label>Port group</Label><Input value={profile.network} onChange={(event) => patchProfile(profile.role, "network", event.target.value)} /></div>
+                        <div className="space-y-1.5 sm:col-span-2"><Label>VMware guest OS</Label><Input value={profile.expectedGuestOs} onChange={(event) => patchProfile(profile.role, "expectedGuestOs", event.target.value)} /></div>
+                        <div className="space-y-1.5"><Label>vCPU</Label><Input type="number" min="1" value={profile.cpus} onChange={(event) => patchProfile(profile.role, "cpus", event.target.value)} /></div>
+                        <div className="space-y-1.5"><Label>Memory (MiB)</Label><Input type="number" min="1024" step="1024" value={profile.memoryMb} onChange={(event) => patchProfile(profile.role, "memoryMb", event.target.value)} /></div>
+                        <div className="space-y-1.5"><Label>Disk reservation (GiB)</Label><Input type="number" min="32" value={profile.systemDiskGb} onChange={(event) => patchProfile(profile.role, "systemDiskGb", event.target.value)} /></div>
+                        <div className="space-y-1.5"><Label>Usage limit (%)</Label><Input type="number" min="1" max="100" value={profile.maxUsagePct} onChange={(event) => patchProfile(profile.role, "maxUsagePct", event.target.value)} /></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
               {preflight && (
                 <section className="rounded-lg border bg-muted/30 p-3">
                   <div className="flex items-center justify-between gap-3">
@@ -261,7 +404,7 @@ export function SettingsDialog() {
                       {preflight.ready ? "Image ready" : "Action required"}
                     </div>
                     <span className="text-[10px] text-muted-foreground">
-                      VMDK {formatBytes(preflight.baseVmdkBytes)} · free {formatBytes(preflight.freeBytes)}
+                      reserve {formatBytes(preflight.datastores.reduce((sum, item) => sum + (item.reservedBytes ?? 0), 0))}
                     </span>
                   </div>
                   <ul className="mt-3 space-y-2">
@@ -287,7 +430,7 @@ export function SettingsDialog() {
             </Button>
             <Button size="sm" disabled={loading || saving || validating || !formValid} onClick={() => void runValidation()}>
               {validating ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
-              Validate image
+              Validate infrastructure
             </Button>
           </div>
         </AlertDialog.Popup>
