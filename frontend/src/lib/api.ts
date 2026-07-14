@@ -132,6 +132,71 @@ export interface Health {
 
 export const getHealth = () => request<Health>(URLS.health)
 
+// --- /settings -------------------------------------------------------------
+
+export interface OperatorSettings {
+  id: string
+  esxiHost: string | null
+  esxiUser: string | null
+  esxiPort: number
+  hasPassword: boolean
+  cloneBase: string
+  cloneDatastore: string
+  cloneGuestOs: string
+  cloneMaxUsagePct: number
+}
+
+export interface OperatorSettingsUpdate {
+  esxiHost?: string
+  esxiUser?: string
+  esxiPassword?: string
+  esxiPort?: number
+  cloneBase?: string
+  cloneDatastore?: string
+  cloneGuestOs?: string
+  cloneMaxUsagePct?: number
+}
+
+export interface GoldenImagePreflightCheck {
+  key: "image" | "datastore" | "guestOs" | "capacity" | "vmNames"
+  ok: boolean
+  detail: string
+}
+
+export interface GoldenImagePreflight {
+  ready: boolean
+  checkedAt: number
+  snapshotId: string
+  base: string
+  datastore: string
+  esxiInstanceUuid: string | null
+  baseMoid: string | null
+  expectedGuestOs: string
+  actualGuestOs: string | null
+  cloneCount: number
+  capacityBytes: number | null
+  freeBytes: number | null
+  baseVmdkBytes: number | null
+  requiredBytes: number | null
+  projectedUsagePct: number | null
+  maxUsagePct: number
+  checks: GoldenImagePreflightCheck[]
+}
+
+export const getSettings = () => request<OperatorSettings>(URLS.settings.root)
+
+export const updateSettings = (update: OperatorSettingsUpdate) =>
+  request<OperatorSettings>(URLS.settings.root, {
+    method: "PUT",
+    body: JSON.stringify(update),
+  })
+
+export const validateGoldenImage = (cloneCount = 1) =>
+  request<GoldenImagePreflight>(URLS.settings.validateGoldenImage, {
+    method: "POST",
+    body: JSON.stringify({ cloneCount }),
+  })
+
 // --- /generate/hostname ----------------------------------------------------
 
 export type Platform = "linux" | "windows"

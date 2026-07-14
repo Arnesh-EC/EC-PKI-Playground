@@ -1,19 +1,182 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { AlertDialog } from "@base-ui/react/alert-dialog"
-import { Settings } from "lucide-react"
+import {
+  CheckCircle2,
+  CircleAlert,
+  Loader2,
+  Settings,
+  ShieldCheck,
+} from "lucide-react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { useIsOperator } from "@/hooks/useIsOperator"
+import {
+  getSettings,
+  updateSettings,
+  validateGoldenImage,
+  type GoldenImagePreflight,
+  type OperatorSettingsUpdate,
+} from "@/lib/api"
+
+interface FormState {
+  esxiHost: string
+  esxiUser: string
+  esxiPassword: string
+  esxiPort: string
+  cloneBase: string
+  cloneDatastore: string
+  cloneGuestOs: string
+  cloneMaxUsagePct: string
+  hasPassword: boolean
+}
+
+const EMPTY_FORM: FormState = {
+  esxiHost: "",
+  esxiUser: "",
+  esxiPassword: "",
+  esxiPort: "443",
+  cloneBase: "ws-2025-base",
+  cloneDatastore: "datastore1",
+  cloneGuestOs: "windows2022srvNext-64",
+  cloneMaxUsagePct: "80",
+  hasPassword: false,
+}
+
+function formatBytes(value: number | null): string {
+  if (value == null) return "unknown"
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"]
+  let amount = value
+  let unit = 0
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024
+    unit += 1
+  }
+  return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+}
 
 /**
- * Settings entry point next to the theme toggle. Currently a placeholder —
- * the dialog shell is wired up so future settings have a home without
- * touching the header again.
+ * Operator setup for the shared ESXi target and guided-deploy golden image.
  */
 export function SettingsDialog() {
+  const isOperator = useIsOperator()
   const [open, setOpen] = useState(false)
+  const [form, setForm] = useState<FormState>(EMPTY_FORM)
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [validating, setValidating] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [preflight, setPreflight] = useState<GoldenImagePreflight | null>(null)
+
+  useEffect(() => {
+    if (!open || !isOperator) return
+    let active = true
+    getSettings()
+      .then((settings) => {
+        if (!active) return
+        setForm({
+          esxiHost: settings.esxiHost ?? "",
+          esxiUser: settings.esxiUser ?? "",
+          esxiPassword: "",
+          esxiPort: String(settings.esxiPort ?? 443),
+          cloneBase: settings.cloneBase ?? "ws-2025-base",
+          cloneDatastore: settings.cloneDatastore ?? "datastore1",
+          cloneGuestOs: settings.cloneGuestOs ?? "windows2022srvNext-64",
+          cloneMaxUsagePct: String(settings.cloneMaxUsagePct ?? 80),
+          hasPassword: settings.hasPassword,
+        })
+      })
+      .catch((error: Error) => {
+        if (active) setLoadError(error.message)
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [open, isOperator])
+
+  if (!isOperator) return null
+
+  function handleOpenChange(next: boolean) {
+    setOpen(next)
+    if (next) {
+      setLoading(true)
+      setLoadError(null)
+      setPreflight(null)
+    }
+  }
+
+  function patch(field: keyof FormState, value: string) {
+    setForm((current) => ({ ...current, [field]: value }))
+    setPreflight(null)
+  }
+
+  function payload(): OperatorSettingsUpdate {
+    return {
+      esxiHost: form.esxiHost.trim(),
+      esxiUser: form.esxiUser.trim(),
+      ...(form.esxiPassword ? { esxiPassword: form.esxiPassword } : {}),
+      esxiPort: Number(form.esxiPort),
+      cloneBase: form.cloneBase.trim(),
+      cloneDatastore: form.cloneDatastore.trim(),
+      cloneGuestOs: form.cloneGuestOs.trim(),
+      cloneMaxUsagePct: Number(form.cloneMaxUsagePct),
+    }
+  }
+
+  const formValid =
+    !!form.esxiHost.trim() &&
+    !!form.esxiUser.trim() &&
+    (form.hasPassword || !!form.esxiPassword) &&
+    Number(form.esxiPort) > 0 &&
+    !!form.cloneBase.trim() &&
+    !!form.cloneDatastore.trim() &&
+    !!form.cloneGuestOs.trim() &&
+    Number(form.cloneMaxUsagePct) > 0 &&
+    Number(form.cloneMaxUsagePct) <= 100
+
+  async function save(showToast = true) {
+    setSaving(true)
+    try {
+      const saved = await updateSettings(payload())
+      setForm((current) => ({
+        ...current,
+        esxiPassword: "",
+        hasPassword: saved.hasPassword,
+      }))
+      if (showToast) toast.success("Infrastructure settings saved.")
+      return true
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save settings.")
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function runValidation() {
+    setPreflight(null)
+    const saved = await save(false)
+    if (!saved) return
+    setValidating(true)
+    try {
+      const result = await validateGoldenImage(1)
+      setPreflight(result)
+      if (result.ready) toast.success("Golden image is deploy-ready.")
+      else toast.error("Golden image validation found blocking issues.")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Validation failed.")
+    } finally {
+      setValidating(false)
+    }
+  }
 
   return (
-    <AlertDialog.Root open={open} onOpenChange={setOpen}>
+    <AlertDialog.Root open={open} onOpenChange={handleOpenChange}>
       <AlertDialog.Trigger
         render={
           <Button variant="ghost" size="icon-sm" aria-label="Settings" title="Settings">
@@ -23,16 +186,108 @@ export function SettingsDialog() {
       />
       <AlertDialog.Portal>
         <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[1px] data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
-        <AlertDialog.Popup className="fixed left-1/2 top-1/2 z-50 w-[min(360px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border bg-popover p-5 text-popover-foreground shadow-lg ring-1 ring-foreground/10 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
+        <AlertDialog.Popup className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100svh-2rem)] w-[min(620px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border bg-popover p-5 text-popover-foreground shadow-lg ring-1 ring-foreground/10 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
           <AlertDialog.Title className="text-sm font-semibold">
-            Settings
+            Infrastructure settings
           </AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-xs text-muted-foreground">
-            More settings coming soon.
+            Select the patched Windows Server image used by guided deploys and
+            prove it is ready before cloning.
           </AlertDialog.Description>
-          <div className="mt-5 flex justify-end">
-            <Button size="sm" onClick={() => setOpen(false)}>
+
+          {loading ? (
+            <div className="flex items-center gap-2 py-10 text-xs text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading settings…
+            </div>
+          ) : loadError ? (
+            <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+              {loadError}
+            </div>
+          ) : (
+            <div className="mt-5 space-y-5">
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  ESXi target
+                </h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="esxi-host">Host</Label>
+                    <Input id="esxi-host" value={form.esxiHost} onChange={(event) => patch("esxiHost", event.target.value)} placeholder="192.168.100.10" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="esxi-port">Port</Label>
+                    <Input id="esxi-port" type="number" min="1" max="65535" value={form.esxiPort} onChange={(event) => patch("esxiPort", event.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="esxi-user">Username</Label>
+                    <Input id="esxi-user" value={form.esxiUser} onChange={(event) => patch("esxiUser", event.target.value)} placeholder="root" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="esxi-password">Password</Label>
+                    <Input id="esxi-password" type="password" value={form.esxiPassword} onChange={(event) => patch("esxiPassword", event.target.value)} placeholder={form.hasPassword ? "Saved — enter to replace" : "Required"} />
+                  </div>
+                </div>
+              </section>
+
+              <section className="border-t pt-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Windows Server golden image
+                </h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="clone-base">Inventory name</Label>
+                    <Input id="clone-base" value={form.cloneBase} onChange={(event) => patch("cloneBase", event.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="clone-datastore">Datastore</Label>
+                    <Input id="clone-datastore" value={form.cloneDatastore} onChange={(event) => patch("cloneDatastore", event.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="clone-guest-os">Expected VMware guest OS</Label>
+                    <Input id="clone-guest-os" value={form.cloneGuestOs} onChange={(event) => patch("cloneGuestOs", event.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="clone-usage">Maximum datastore usage (%)</Label>
+                    <Input id="clone-usage" type="number" min="1" max="100" step="0.1" value={form.cloneMaxUsagePct} onChange={(event) => patch("cloneMaxUsagePct", event.target.value)} />
+                  </div>
+                </div>
+              </section>
+
+              {preflight && (
+                <section className="rounded-lg border bg-muted/30 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      {preflight.ready ? <ShieldCheck className="h-4 w-4 text-emerald-500" /> : <CircleAlert className="h-4 w-4 text-destructive" />}
+                      {preflight.ready ? "Image ready" : "Action required"}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground">
+                      VMDK {formatBytes(preflight.baseVmdkBytes)} · free {formatBytes(preflight.freeBytes)}
+                    </span>
+                  </div>
+                  <ul className="mt-3 space-y-2">
+                    {preflight.checks.map((check) => (
+                      <li key={check.key} className="flex items-start gap-2 text-xs">
+                        {check.ok ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" /> : <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />}
+                        <span className={check.ok ? "text-muted-foreground" : "text-destructive"}>{check.detail}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </div>
+          )}
+
+          <div className="mt-5 flex flex-wrap justify-end gap-2 border-t pt-4">
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
               Close
+            </Button>
+            <Button variant="outline" size="sm" disabled={loading || saving || validating || !formValid} onClick={() => void save()}>
+              {saving && !validating ? <Loader2 className="animate-spin" /> : null}
+              Save
+            </Button>
+            <Button size="sm" disabled={loading || saving || validating || !formValid} onClick={() => void runValidation()}>
+              {validating ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+              Validate image
             </Button>
           </div>
         </AlertDialog.Popup>

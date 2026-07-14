@@ -32,6 +32,10 @@ export const URLS = {
     powerOff: (name: string) => `/vm/${encodeURIComponent(name)}/power-off`,
   },
   deploy: "/deploy",
+  settings: {
+    root: "/settings",
+    validateGoldenImage: "/settings/golden-image/validate",
+  },
   iso: {
     upload: "/iso",
     one: (id: string) => `/iso/${encodeURIComponent(id)}`,
