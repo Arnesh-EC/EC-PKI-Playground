@@ -611,10 +611,146 @@ export function isDomainEligible(node: Node<MachineData>, edges: Edge[]): boolea
   if (!isConnectable(node.data)) return false
   if (
     node.data.typeId === "certificateAuthority" &&
-    caTier(node.id, edges) === "root"
+    (node.data.config?.caType === "Root" || caTier(node.id, edges) === "root")
   )
     return false
   return true
+}
+
+/** Explains whether a node can join a specific domain through either drag/drop or the accessible action. */
+export function domainJoinBlockReason(
+  node: Node<MachineData>,
+  dc: Node<MachineData>,
+  edges: Edge[],
+): string | null {
+  if (!isConnectable(dc.data)) {
+    return `Configure ${dc.data.name} before using its domain.`
+  }
+  if (node.data.typeId === "domainController") {
+    return "A domain controller defines its own boundary and cannot join another domain."
+  }
+  if (!isConnectable(node.data)) {
+    return `Configure ${node.data.name} before joining it to a domain.`
+  }
+  if (
+    node.data.typeId === "certificateAuthority" &&
+    (node.data.config?.caType === "Root" || caTier(node.id, edges) === "root")
+  ) {
+    return `${node.data.name} is an offline root CA and must remain outside Active Directory.`
+  }
+  const current = edges.find(
+    (edge) => edge.source === node.id && edge.data?.edgeType === EDGE_TYPE.domainJoin,
+  )
+  if (current?.target === dc.id) {
+    return `${node.data.name} already belongs to ${domainLabel(dc)}.`
+  }
+  return null
+}
+
+/** Backend commands that the canonical domainJoin operation expands into for this role. */
+export function domainJoinOperations(
+  node: Node<MachineData>,
+  dc: Node<MachineData>,
+  nodes: Node<MachineData>[],
+): string[] {
+  const operations = [
+    `dns.set_client · use ${dc.data.name}`,
+    `domain.join · ${domainLabel(dc)}`,
+    "system.reboot → domain.verify",
+  ]
+
+  if (node.data.typeId === "certificateAuthority" || node.data.typeId === "webServer") {
+    operations.push("dns.apply_resources → dns.verify · A/PTR")
+  }
+  if (node.data.typeId === "webServer") {
+    operations.push("iis.setup_certenroll · share/ACL")
+  }
+  if (
+    node.data.typeId === "client" &&
+    nodes.some(
+      (candidate) =>
+        candidate.data.typeId === "certificateAuthority" &&
+        caTier(candidate.id, []) !== "root" &&
+        candidate.data.config?.caType !== "Root",
+    )
+  ) {
+    operations.push("cert.enroll → cert.verify · Workstation")
+  }
+  return operations
+}
+
+const DOMAIN_HEALTH_PRIORITY: Record<ConnectionHealth, number> = {
+  [CONNECTION_HEALTH.verified]: 0,
+  [CONNECTION_HEALTH.planned]: 1,
+  [CONNECTION_HEALTH.applying]: 2,
+  [CONNECTION_HEALTH.degraded]: 3,
+  [CONNECTION_HEALTH.broken]: 4,
+}
+
+function lifecycleConnectionHealth(data: MachineData): ConnectionHealth {
+  switch (data.lifecycle) {
+    case LIFECYCLE.deployed:
+      return CONNECTION_HEALTH.verified
+    case LIFECYCLE.staged:
+      return CONNECTION_HEALTH.planned
+    case LIFECYCLE.deploying:
+    case LIFECYCLE.provisioning:
+      return CONNECTION_HEALTH.applying
+    case LIFECYCLE.drifted:
+    case LIFECYCLE.destroying:
+      return CONNECTION_HEALTH.degraded
+    case LIFECYCLE.draft:
+    case LIFECYCLE.failed:
+      return CONNECTION_HEALTH.broken
+  }
+}
+
+function leastHealthy(states: ConnectionHealth[]): ConnectionHealth {
+  return states.reduce((worst, state) =>
+    DOMAIN_HEALTH_PRIORITY[state] > DOMAIN_HEALTH_PRIORITY[worst] ? state : worst,
+  CONNECTION_HEALTH.verified)
+}
+
+export interface DomainRegionSummary {
+  memberCount: number
+  forestLevel: string
+  forestHealth: ConnectionHealth
+  domainHealth: ConnectionHealth
+  services: {
+    dns: ConnectionHealth
+    ldap: ConnectionHealth
+    authentication: ConnectionHealth
+  }
+}
+
+/** Rim and nested-service state derived from the forest lifecycle and membership edges. */
+export function domainRegionSummary(
+  dc: Node<MachineData>,
+  edges: Edge[],
+): DomainRegionSummary {
+  const forestHealth = lifecycleConnectionHealth(dc.data)
+  const memberships = edges.filter(
+    (edge) => edge.target === dc.id && edge.data?.edgeType === EDGE_TYPE.domainJoin,
+  )
+  const membershipHealth = memberships.map((edge) => {
+    const health = edge.data?.health as ConnectionHealth | undefined
+    return health && health in DOMAIN_HEALTH_PRIORITY
+      ? health
+      : CONNECTION_HEALTH.planned
+  })
+  const reachHealth = leastHealthy([forestHealth, ...membershipHealth])
+
+  return {
+    memberCount: memberships.length,
+    forestLevel: dc.data.config?.forestLevel ?? "Forest level pending",
+    forestHealth,
+    domainHealth: reachHealth,
+    services: {
+      dns: reachHealth,
+      ldap: reachHealth,
+      authentication: reachHealth,
+    },
+  }
 }
 
 /**

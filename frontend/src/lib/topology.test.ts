@@ -7,6 +7,9 @@ import {
   connectionGuidance,
   connectionHealthForOperation,
   connectionPorts,
+  domainJoinBlockReason,
+  domainJoinOperations,
+  domainRegionSummary,
   isConnectable,
   lintTopologyRelationships,
 } from "@/lib/topology"
@@ -160,5 +163,54 @@ describe("topology relationship linter", () => {
         message: "SRV1 can enroll its probe, but no verified OCSP path reaches its certificate.",
       }),
     )
+  })
+})
+
+describe("living domain model", () => {
+  const dc = machine("dc", "DC01", "domainController", {
+    domainName: "encon.pki",
+    forestLevel: "Windows Server 2025",
+  })
+
+  it("uses one eligibility explanation for spatial and accessible joins", () => {
+    const draft = machine("draft", "SRV2", "webServer")
+    draft.data.lifecycle = "draft"
+    const root = machine("root", "CA01", "certificateAuthority", { caType: "Root" })
+
+    expect(domainJoinBlockReason(draft, dc, [])).toBe(
+      "Configure SRV2 before joining it to a domain.",
+    )
+    expect(domainJoinBlockReason(root, dc, [])).toBe(
+      "CA01 is an offline root CA and must remain outside Active Directory.",
+    )
+    expect(domainJoinBlockReason(machine("web", "SRV1", "webServer"), dc, [])).toBeNull()
+  })
+
+  it("previews the exact role-specific domain join command sequence", () => {
+    expect(domainJoinOperations(machine("web", "SRV1", "webServer"), dc, [])).toEqual([
+      "dns.set_client · use DC01",
+      "domain.join · encon.pki",
+      "system.reboot → domain.verify",
+      "dns.apply_resources → dns.verify · A/PTR",
+      "iis.setup_certenroll · share/ACL",
+    ])
+  })
+
+  it("summarizes forest, member, and service reach health for the rim", () => {
+    const summary = domainRegionSummary(dc, [
+      relationship("member", "web", "dc", EDGE_TYPE.domainJoin, CONNECTION_HEALTH.degraded),
+    ])
+
+    expect(summary).toMatchObject({
+      memberCount: 1,
+      forestLevel: "Windows Server 2025",
+      forestHealth: CONNECTION_HEALTH.planned,
+      domainHealth: CONNECTION_HEALTH.degraded,
+      services: {
+        dns: CONNECTION_HEALTH.degraded,
+        ldap: CONNECTION_HEALTH.degraded,
+        authentication: CONNECTION_HEALTH.degraded,
+      },
+    })
   })
 })
