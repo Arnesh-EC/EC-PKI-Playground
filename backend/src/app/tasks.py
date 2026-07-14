@@ -899,6 +899,9 @@ def _run_sequence_op(
     result = {"steps": total}
     if "lab-health" in sequence_results:
         result["health"] = sequence_results["lab-health"]
+        from app.core.sequences.journey import build_certificate_journey
+
+        result["certificateJourney"] = build_certificate_journey(ctx, sequence_results)
     state[op.id] = OpRunState(
         status="done", percent=100.0, phase="Done", result=result
     )

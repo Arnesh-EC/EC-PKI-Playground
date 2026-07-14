@@ -216,7 +216,9 @@ def test_completed_publication_op_exposes_health_report(monkeypatch):
     state = {}
 
     assert _run_sequence_op({}, op, [], "job", "guest", state, lambda: None) is True
-    assert state["publish"].result == {"steps": 1, "health": health}
+    assert state["publish"].result["steps"] == 1
+    assert state["publish"].result["health"] == health
+    assert state["publish"].result["certificateJourney"]["schemaVersion"] == 1
 
 
 def _client_ctx(with_ca=True):
