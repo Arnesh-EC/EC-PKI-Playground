@@ -188,15 +188,15 @@ export const TEMPLATE_CATALOG: TemplateDef[] = [
   },
   {
     id: "webServer",
-    label: "Web Server",
-    short: "IIS",
+    label: "PKI Web Services",
+    short: "PKI",
     icon: Globe,
     accent: "text-emerald-500",
-    description: "IIS · CDP/AIA · OCSP",
+    description: "IIS publication · CDP/AIA · OCSP",
     configFields: [
       {
         key: "certEnrollPath",
-        label: "CertEnroll Path",
+        label: "CertEnroll Directory",
         type: "text",
         default: "C:\\CertEnroll",
         placeholder: "C:\\CertEnroll",
@@ -243,7 +243,7 @@ export const TEMPLATE_BY_ID = Object.fromEntries(
 export const AUTO_NAME_PREFIX: Record<string, string> = {
   domainController: "dc",
   certificateAuthority: "ca",
-  webServer: "web",
+  webServer: "pki",
   client: "client",
   standalone: "srv",
 }
