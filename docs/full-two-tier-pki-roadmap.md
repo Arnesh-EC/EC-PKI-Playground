@@ -21,16 +21,17 @@ OCSP, CDP, and AIA as verified, and CA02's enterprise PKI containers are healthy
 
 | Area | Current position | Readiness |
 |---|---|---:|
-| Canvas and local staging | Role catalog, CA hierarchy, growing domain circle, staged operations, persistence, one Deploy action | 75% |
-| Guide command coverage | Forest, joins, CA install/config, relay, IIS, OCSP, templates, enrollment, CNAME, and verification commands exist | 80% |
-| Correct orchestration | The backend validates planned/realized resources and compiles a canonical dependency DAG from the final topology | 80% |
-| Exact scoped parity | Incomplete DNS lifecycle, weak final assertions, and simulated domain leave | 60% |
+| Canvas and local staging | Typed CDP/AIA and OCSP paths, CA hierarchy, domain circle, staged operations, persistence, and one Deploy action | 95% |
+| Guide command coverage | Forest, joins, CA install/config, relay, IIS, OCSP, templates, enrollment, CNAME, and verification commands exist | 95% |
+| Correct orchestration | The backend validates planned/realized resources and compiles a canonical dependency DAG from the final topology | 95% |
+| Exact scoped parity | DNS lifecycle, structured final assertions, domain leave, recovery, and teardown are implemented | 90% |
 | ESXi one-shot confidence | Clone and agent paths exist, but ML-DSA, OCSP COM, SYSTEM credential use, timing, and filenames remain hardware canaries | 35% |
 
-The implementation is therefore roughly **three quarters code-complete**, but
-only **one third operationally proven**. A credible estimate is **8-12 focused
-engineering weeks plus repeated real-ESXi soak runs**. Hardware or Windows
-image problems can extend the calendar even when the code is complete.
+The implementation is therefore roughly **90% code-complete**, but only **one
+third operationally proven**. The remaining product work is bounded UI polish;
+the release gate is still the real-ESXi canary matrix followed by three clean
+full-lab deployments with evidence bundles. Hardware or Windows image problems
+can extend the calendar even when the code is complete.
 
 ## What Already Works
 
