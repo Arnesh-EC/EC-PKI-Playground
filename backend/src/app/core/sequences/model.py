@@ -32,6 +32,18 @@ class NodeContext:
     template_config: Mapping[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class DnsRecordContext:
+    """One symbolic topology DNS resource available to sequence resolvers."""
+
+    id: str
+    kind: str
+    server: str
+    subject: str
+    zone: str
+    name: str | None = None
+
+
 @dataclass
 class RunContext:
     """Cross-VM state threaded through a sequence: the resolved nodes, the
@@ -46,6 +58,7 @@ class RunContext:
     domain_name: str | None = None
     netbios: str | None = None
     pki_host: str | None = None
+    dns_records: tuple[DnsRecordContext, ...] = ()
     artifacts: dict[str, str] = field(default_factory=dict)
 
     def node(self, key: str) -> NodeContext:

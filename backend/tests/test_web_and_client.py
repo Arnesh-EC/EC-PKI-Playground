@@ -1,13 +1,14 @@
 """Slice-12 sequences: webServerCert (IIS/OCSP) + client enrollment tail on
 domainJoin (pure)."""
 
+import json
 import os
 
 os.environ.setdefault("SESSION_SECRET", "test-session-secret")
 os.environ.setdefault("SETTINGS_ENC_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 
 from app.core.sequences.definitions import op_sequence  # noqa: E402
-from app.core.sequences.model import NodeContext, RunContext  # noqa: E402
+from app.core.sequences.model import DnsRecordContext, NodeContext, RunContext  # noqa: E402
 
 
 def _node(nid, vm, template, cfg=None, ip="192.168.1.1"):
@@ -30,6 +31,16 @@ def _web_ctx():
         domain_name="encon.pki",
         netbios="ENCON",
         pki_host="pki.encon.pki",
+        dns_records=(
+            DnsRecordContext(
+                id="dns:cname:dc01:pki",
+                kind="CNAME",
+                server="dc01",
+                subject="srv1",
+                zone="encon.pki",
+                name="pki",
+            ),
+        ),
     )
 
 
@@ -41,7 +52,9 @@ def test_web_server_cert_sequence_shape():
         "ocsp.install",
         "cert.enroll",
         "ocsp.configure_revocation",
-        "dns.create_record",
+        "dns.apply_resources",
+        "dns.verify",
+        "dns.verify",
     ]
 
 
@@ -64,11 +77,29 @@ def test_ocsp_config_points_at_the_issuing_ca():
 
 def test_deferred_cname_targets_the_web_host_on_the_dc():
     ctx = _web_ctx()
-    cname = next(s for s in op_sequence("webServerCert", ctx) if s.id == "pki-cname")
+    cname = next(s for s in op_sequence("webServerCert", ctx) if s.id == "dns-cname-apply")
     assert cname.target == "dc"
     params = cname.resolve_params(ctx)
-    assert params["name"] == "PKI"
-    assert params["target"] == "guest-abc12-srv1.encon.pki."
+    assert json.loads(params["records"])[0] == {
+        "id": "dns:cname:dc01:pki",
+        "kind": "CNAME",
+        "name": "pki",
+        "value": "guest-abc12-srv1.encon.pki.",
+        "zone": "encon.pki",
+    }
+
+
+def test_cname_and_http_are_verified_from_web_and_ca():
+    ctx = _web_ctx()
+    verify = [
+        step for step in op_sequence("webServerCert", ctx)
+        if step.command == "dns.verify"
+    ]
+    assert [step.target for step in verify] == ["primary", "ca"]
+    assert all(
+        step.resolve_params(ctx)["httpUrl"] == "http://pki.encon.pki/CertEnroll/"
+        for step in verify
+    )
 
 
 def _client_ctx(with_ca=True):

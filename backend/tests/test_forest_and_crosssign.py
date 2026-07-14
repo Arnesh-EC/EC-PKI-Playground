@@ -12,7 +12,11 @@ from app.core.sequences.definitions import (  # noqa: E402
     op_sequence,
     provision_steps,
 )
-from app.core.sequences.model import NodeContext, RunContext  # noqa: E402
+from app.core.sequences.model import (  # noqa: E402
+    DnsRecordContext,
+    NodeContext,
+    RunContext,
+)
 
 
 def test_forest_mode_maps_levels():
@@ -57,6 +61,42 @@ def test_dc_forest_params_map_config():
     assert p["safeModePassword"] == "Str0ng-Lab-Pass!"
     # dns.set_client points at the DC's own IP.
     assert provision_steps("domainController")[2].resolve_params(ctx)["servers"] == "192.168.1.90"
+
+
+def test_dc_applies_its_a_record_and_verifies_ad_srv_records():
+    record = DnsRecordContext(
+        id="dns:a:dc01:dc01",
+        kind="A",
+        server="dc01",
+        subject="dc01",
+        zone="encon.pki",
+    )
+    steps = provision_steps(
+        "domainController",
+        node_id="dc01",
+        dns_records=(record,),
+    )
+    assert [step.command for step in steps][-2:] == [
+        "dns.apply_resources",
+        "dns.verify",
+    ]
+    node = NodeContext(
+        node_id="dc01",
+        vm_name="guest-abc12-dc01",
+        hostname="guest-abc12-dc01",
+        agent_vm_id="v",
+        ip="192.168.1.90",
+        template_id="domainController",
+        template_config={"domainName": "encon.pki"},
+    )
+    ctx = RunContext(
+        nodes={"primary": node},
+        domain_name="encon.pki",
+        dns_records=(record,),
+    )
+    verify = steps[-1].resolve_params(ctx)
+    assert verify["requireAdSrv"] == "true"
+    assert verify["domain"] == "encon.pki"
 
 
 def _root_ctx():

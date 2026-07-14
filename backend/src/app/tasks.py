@@ -354,12 +354,19 @@ def _provision_cloned_vm(
     from app.core import agentbus
     from app.core.firstboot import hostname_for
     from app.core.sequences import NodeContext, RunContext, SequenceError
+    from app.core.sequences.context import dns_records_for_context
     from app.core.sequences.definitions import provision_steps
     from app.core.sequences.worker import run_op_sequence
     from app.core.template_config import extract_template_config
 
     template = op.params["template"]
-    steps = provision_steps(template, ca_type=op.params.get("caType"))
+    dns_records = dns_records_for_context(topology)
+    steps = provision_steps(
+        template,
+        ca_type=op.params.get("caType"),
+        node_id=op.target,
+        dns_records=dns_records,
+    )
 
     vm_name = op.params["vmName"]
     _set_provision_state(conn_db, vm_name, "applying")
@@ -425,6 +432,7 @@ def _provision_cloned_vm(
                 domain_name=domain_name,
                 netbios=netbios,
                 pki_host=f"pki.{domain_name}" if domain_name else None,
+                dns_records=dns_records,
             )
             on_step_complete, on_step_progress, on_step_tick = _sequence_progress(
                 op.id, len(steps), state, push, result=partial,
@@ -803,6 +811,7 @@ def _run_sequence_op(
     owner_role: str,
     state: dict[str, OpRunState],
     push,
+    topology: "TopologyDocument | None" = None,
 ) -> bool | None:
     """Run a non-createVm op as a real command sequence.
 
@@ -822,7 +831,7 @@ def _run_sequence_op(
     state[op.id] = OpRunState(status="running", percent=0.0, phase="Resolving")
     push()
     try:
-        ctx = build_run_context(db, op, ops)
+        ctx = build_run_context(db, op, ops, topology)
         steps = op_sequence(op.kind.value, ctx)
     except ContextError as exc:
         state[op.id] = OpRunState(status="error", detail=str(exc))
@@ -1029,7 +1038,8 @@ def run_plan_task(
                         # …); otherwise the timed stub. `None` = no sequence for
                         # this op/topology, so fall through to the simulation.
                         result = _run_sequence_op(
-                            db, op, ops, job_id, owner_role, state, push
+                            db, op, ops, job_id, owner_role, state, push,
+                            request.topology,
                         )
                         ok = _simulate_op(op, state, push) if result is None else result
 

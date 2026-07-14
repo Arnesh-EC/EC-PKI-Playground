@@ -23,7 +23,7 @@ Runs in the Celery worker over a sync Mongo client.
 import logging
 
 from app.core.firstboot import hostname_for
-from app.core.sequences.model import NodeContext, RunContext
+from app.core.sequences.model import DnsRecordContext, NodeContext, RunContext
 from app.core.template_config import decrypt_config_secrets
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,25 @@ def _find_issuing_ca(db, sibling_vm_name: str) -> NodeContext | None:
     return None
 
 
-def build_run_context(db, op, all_ops) -> RunContext:
+def dns_records_for_context(topology) -> tuple[DnsRecordContext, ...]:
+    """Convert topology Pydantic resources to the sequence's pure dataclass."""
+
+    if topology is None:
+        return ()
+    return tuple(
+        DnsRecordContext(
+            id=record.id,
+            kind=str(getattr(record.kind, "value", record.kind)),
+            server=record.server,
+            subject=record.subject,
+            zone=record.zone,
+            name=record.name,
+        )
+        for record in topology.dns_records
+    )
+
+
+def build_run_context(db, op, all_ops, topology=None) -> RunContext:
     """Resolve the :class:`RunContext` for a non-createVm ``op``.
 
     Populates the alias keys the definitions use: ``primary`` (the op's target),
@@ -161,4 +179,5 @@ def build_run_context(db, op, all_ops) -> RunContext:
         domain_name=domain_name,
         netbios=netbios,
         pki_host=pki_host,
+        dns_records=dns_records_for_context(topology),
     )

@@ -12,7 +12,9 @@ step can reference another node's real guest-namespaced hostname
 (``firstboot.hostname_for``) rather than a display name.
 """
 
-from app.core.sequences.model import RunContext, Step, StepRuntime
+import json
+
+from app.core.sequences.model import DnsRecordContext, RunContext, Step, StepRuntime
 
 #: Context alias keys (mirror app.core.sequences.context).
 PRIMARY = "primary"
@@ -50,6 +52,79 @@ def _forest_mode(forest_level: str | None) -> str:
     Windows Server 2025 introduced a new functional level past WinThreshold
     (2016), which covers 2016/2019/2022."""
     return "Win2025" if forest_level and "2025" in forest_level else "WinThreshold"
+
+
+def _node_by_id(ctx: RunContext, node_id: str):
+    for node in ctx.nodes.values():
+        if node.node_id == node_id:
+            return node
+    raise KeyError(f"DNS resource references unavailable node '{node_id}'")
+
+
+def _fqdn(ctx: RunContext, hostname: str) -> str:
+    return f"{hostname}.{ctx.domain_name}" if ctx.domain_name else hostname
+
+
+def _materialize_dns_records(
+    ctx: RunContext, records: tuple[DnsRecordContext, ...]
+) -> str:
+    """Resolve symbolic topology DNS resources into flat agent command data."""
+
+    materialized: list[dict[str, str]] = []
+    for record in records:
+        subject = _node_by_id(ctx, record.subject)
+        if record.kind == "A":
+            if not subject.ip:
+                raise ValueError(f"A resource '{record.id}' has no allocated address")
+            name, value = subject.hostname, subject.ip
+        elif record.kind == "PTR":
+            if not subject.ip:
+                raise ValueError(f"PTR resource '{record.id}' has no allocated address")
+            name, value = subject.ip, f"{_fqdn(ctx, subject.hostname)}."
+        elif record.kind == "CNAME":
+            name, value = record.name or "", f"{_fqdn(ctx, subject.hostname)}."
+        else:
+            raise ValueError(f"unsupported DNS resource kind '{record.kind}'")
+        materialized.append(
+            {
+                "id": record.id,
+                "kind": record.kind,
+                "zone": record.zone.rstrip("."),
+                "name": name,
+                "value": value,
+            }
+        )
+    return json.dumps(materialized, separators=(",", ":"), sort_keys=True)
+
+
+def _dns_params(
+    ctx: RunContext,
+    records: tuple[DnsRecordContext, ...],
+    *,
+    require_ad_srv: bool = False,
+    http_url: str | None = None,
+) -> dict[str, str]:
+    server = _node_by_id(ctx, records[0].server)
+    params = {
+        "records": _materialize_dns_records(ctx, records),
+        "server": server.ip or server.hostname,
+    }
+    if require_ad_srv:
+        params["requireAdSrv"] = "true"
+        params["domain"] = ctx.domain_name or ""
+    if http_url:
+        params["httpUrl"] = http_url
+    return params
+
+
+def _records_for(
+    ctx: RunContext, subject_id: str, kinds: tuple[str, ...]
+) -> tuple[DnsRecordContext, ...]:
+    return tuple(
+        record
+        for record in ctx.dns_records
+        if record.subject == subject_id and record.kind in kinds
+    )
 
 
 def _ds_config_dn(domain: str) -> str:
@@ -182,7 +257,7 @@ def _root_ca_provision() -> list[Step]:
     ]
 
 
-def _domain_controller_provision() -> list[Step]:
+def _domain_controller_provision(*, include_dns: bool = False) -> list[Step]:
     """Domain controller (createVm tail, slice 11): promote a new forest
     (``Install-ADDSForest -NoRebootOnCompletion``), reboot, verify ADWS is up,
     then point the DC's own NIC DNS at itself. The `pki` CNAME is deferred to
@@ -197,7 +272,7 @@ def _domain_controller_provision() -> list[Step]:
             "safeModePassword": cfg.get("domainAdminPassword", ""),
         }
 
-    return [
+    steps = [
         Step(
             id="install-forest",
             command="dc.install_forest",
@@ -223,6 +298,29 @@ def _domain_controller_provision() -> list[Step]:
             params=lambda rt: {"servers": rt.node.ip or "127.0.0.1"},
         ),
     ]
+    if include_dns:
+        def records(rt: StepRuntime) -> tuple[DnsRecordContext, ...]:
+            return _records_for(rt.ctx, rt.node.node_id, ("A", "PTR"))
+
+        steps.extend(
+            [
+                Step(
+                    id="dns-apply",
+                    command="dns.apply_resources",
+                    target=PRIMARY,
+                    params=lambda rt: _dns_params(rt.ctx, records(rt)),
+                ),
+                Step(
+                    id="dns-verify",
+                    command="dns.verify",
+                    target=PRIMARY,
+                    params=lambda rt: _dns_params(
+                        rt.ctx, records(rt), require_ad_srv=True
+                    ),
+                ),
+            ]
+        )
+    return steps
 
 
 #: createVm provision tails by template id. A template absent here provisions
@@ -234,7 +332,13 @@ _PROVISION_SEQUENCES = {
 }
 
 
-def provision_steps(template: str, *, ca_type: str | None = None) -> list[Step]:
+def provision_steps(
+    template: str,
+    *,
+    ca_type: str | None = None,
+    node_id: str | None = None,
+    dns_records: tuple[DnsRecordContext, ...] = (),
+) -> list[Step]:
     """The createVm provision tail for ``template`` (empty when there's none).
 
     ``ca_type`` skips provisioning an *issuing* CA on first boot — it can't
@@ -243,6 +347,15 @@ def provision_steps(template: str, *, ca_type: str | None = None) -> list[Step]:
     """
     if template == "certificateAuthority" and ca_type == "Issuing":
         return []
+    if template == "domainController":
+        include_dns = bool(
+            node_id
+            and any(
+                record.subject == node_id and record.kind in ("A", "PTR")
+                for record in dns_records
+            )
+        )
+        return _domain_controller_provision(include_dns=include_dns)
     builder = _PROVISION_SEQUENCES.get(template)
     return builder() if builder else []
 
@@ -292,6 +405,26 @@ def _domain_join_sequence(ctx: RunContext) -> list[Step]:
             verify_window_s=600,
         ),
     ]
+
+    dns_records = _records_for(ctx, ctx.node(PRIMARY).node_id, ("A", "PTR"))
+    if dns_records:
+        steps.extend(
+            [
+                Step(
+                    id="dns-apply",
+                    command="dns.apply_resources",
+                    target=DC,
+                    params=lambda rt: _dns_params(ctx, dns_records),
+                ),
+                Step(
+                    id="dns-verify",
+                    command="dns.verify",
+                    target=PRIMARY,
+                    params=lambda rt: _dns_params(ctx, dns_records),
+                    timeout_s=300,
+                ),
+            ]
+        )
 
     if ctx.node(PRIMARY).template_id == "webServer":
         steps.append(
@@ -396,20 +529,33 @@ def _web_server_cert_sequence(ctx: RunContext) -> list[Step]:
         ),
     ]
 
-    # The deferred pki CNAME → this web host, created on the DC.
-    if DC in ctx.nodes and ctx.domain_name:
+    # Apply the planned CNAME on the authoritative DC, then prove both name
+    # resolution and the CertEnroll HTTP hop from the web host and issuing CA.
+    cname_records = _records_for(ctx, ctx.node(PRIMARY).node_id, ("CNAME",))
+    if cname_records and DC in ctx.nodes:
         steps.append(
             Step(
-                id="pki-cname",
-                command="dns.create_record",
+                id="dns-cname-apply",
+                command="dns.apply_resources",
                 target=DC,
-                params=lambda rt: {
-                    "zone": ctx.domain_name or "",
-                    "name": "PKI",
-                    "target": f"{ctx.node(PRIMARY).hostname}.{ctx.domain_name}.",
-                },
+                params=lambda rt: _dns_params(ctx, cname_records),
             )
         )
+        http_url = f"http://{ctx.pki_host}/CertEnroll/"
+        for target, suffix in ((PRIMARY, "web"), (CA, "ca")):
+            if target not in ctx.nodes:
+                continue
+            steps.append(
+                Step(
+                    id=f"dns-cname-verify-{suffix}",
+                    command="dns.verify",
+                    target=target,
+                    params=lambda rt, url=http_url: _dns_params(
+                        ctx, cname_records, http_url=url
+                    ),
+                    timeout_s=300,
+                )
+            )
     return steps
 
 

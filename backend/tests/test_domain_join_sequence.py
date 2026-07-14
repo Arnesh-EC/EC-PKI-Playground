@@ -1,16 +1,17 @@
 """Slice-10 domainJoin expansion: the sequence shape + param resolution
 (pure — no redis/Mongo)."""
 
+import json
 import os
 
 os.environ.setdefault("SESSION_SECRET", "test-session-secret")
 os.environ.setdefault("SETTINGS_ENC_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 
 from app.core.sequences.definitions import op_sequence  # noqa: E402
-from app.core.sequences.model import NodeContext, RunContext  # noqa: E402
+from app.core.sequences.model import DnsRecordContext, NodeContext, RunContext  # noqa: E402
 
 
-def _ctx(primary_template="standalone"):
+def _ctx(primary_template="standalone", with_dns=False):
     member = NodeContext(
         node_id="ca02",
         vm_name="guest-abc12-ca02",
@@ -37,6 +38,22 @@ def _ctx(primary_template="standalone"):
         nodes={"primary": member, "secondary": dc, "dc": dc},
         domain_name="encon.pki",
         netbios="ENCON",
+        dns_records=(
+            DnsRecordContext(
+                id="dns:a:dc01:ca02",
+                kind="A",
+                server="dc01",
+                subject="ca02",
+                zone="encon.pki",
+            ),
+            DnsRecordContext(
+                id="dns:ptr:dc01:ca02",
+                kind="PTR",
+                server="dc01",
+                subject="ca02",
+                zone="1.168.192.in-addr.arpa",
+            ),
+        ) if with_dns else (),
     )
 
 
@@ -57,6 +74,32 @@ def test_dns_points_at_the_dc_ip():
     dns = steps[0]
     ctx = _ctx()
     assert dns.resolve_params(ctx)["servers"] == "192.168.1.90"
+
+
+def test_join_applies_and_verifies_planned_a_and_ptr_records():
+    ctx = _ctx(with_dns=True)
+    steps = op_sequence("domainJoin", ctx)
+    assert [step.command for step in steps][-2:] == [
+        "dns.apply_resources",
+        "dns.verify",
+    ]
+    records = json.loads(steps[-2].resolve_params(ctx)["records"])
+    assert records == [
+        {
+            "id": "dns:a:dc01:ca02",
+            "kind": "A",
+            "name": "guest-abc12-ca02",
+            "value": "192.168.1.92",
+            "zone": "encon.pki",
+        },
+        {
+            "id": "dns:ptr:dc01:ca02",
+            "kind": "PTR",
+            "name": "192.168.1.92",
+            "value": "guest-abc12-ca02.encon.pki.",
+            "zone": "1.168.192.in-addr.arpa",
+        },
+    ]
 
 
 def test_join_params_use_domain_netbios_admin_and_secret_password():
