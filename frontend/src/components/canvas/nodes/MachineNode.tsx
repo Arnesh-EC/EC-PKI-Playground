@@ -42,7 +42,8 @@ import { Badge } from "@/components/ui/badge"
 import { ProgressBar } from "./ProgressBar"
 
 const MACHINE_NODE_WIDTH = 304
-const MACHINE_NODE_MIN_HEIGHT = 216
+const MACHINE_NODE_MIN_HEIGHT = 160
+const BOTTOM_SOCKET_GUTTER = 20
 const DRAFT_NODE_HEIGHT = 92
 const SOCKET_ROW_HEIGHT = 24
 const SOCKETS_WITHIN_COMPACT_CARD = 2
@@ -109,7 +110,10 @@ function machineNodeHeight(
   isDraft: boolean,
 ): number {
   if (isDraft) return DRAFT_NODE_HEIGHT
-  return MACHINE_NODE_MIN_HEIGHT +
+  const hasBottomSocket = socketSpecs.some(
+    (spec) => spec.socket === SERVICE_SOCKET.issuance && spec.type === "source",
+  )
+  return MACHINE_NODE_MIN_HEIGHT + (hasBottomSocket ? BOTTOM_SOCKET_GUTTER : 0) +
     Math.max(0, socketSpecs.length - SOCKETS_WITHIN_COMPACT_CARD) * SOCKET_ROW_HEIGHT
 }
 
@@ -314,6 +318,9 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
   const socketLayoutKey = socketSpecs
     .map((spec) => serviceSocketHandleId(spec.socket, spec.type))
     .join("|")
+  const hasBottomSocket = socketSpecs.some(
+    (spec) => spec.socket === SERVICE_SOCKET.issuance && spec.type === "source",
+  )
   useEffect(() => {
     updateNodeInternals(id)
   }, [id, socketLayoutKey, updateNodeInternals])
@@ -494,29 +501,18 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
           <div className="machine-node-reveal px-5 pt-2">
             <div className="flex h-12 min-w-0 items-center">
               {activePhase && (
-                <div className="group/phase relative min-w-0">
+                <div className="w-full min-w-0">
                   <span
-                    className="block min-w-0 truncate text-[10px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    tabIndex={0}
-                    aria-describedby={`phase-${id}`}
+                    className="block min-w-0 whitespace-normal break-words text-[10px] leading-tight text-muted-foreground"
                   >
                     {data.phase ?? "Starting"}
                   </span>
-                  <div
-                    id={`phase-${id}`}
-                    role="tooltip"
-                    className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-64 rounded-md border bg-popover px-2 py-1.5 text-[10px] leading-snug text-popover-foreground shadow-lg group-hover/phase:block group-focus-within/phase:block"
-                  >
-                    {data.phase ?? "Starting"}
-                  </div>
                   <ProgressBar pct={data.progress ?? 0} />
                 </div>
               )}
             </div>
 
-            <div aria-hidden="true" className="h-6" />
-
-            <dl className="grid h-12 grid-cols-2 gap-4 border-t pt-2">
+            <dl className="grid grid-cols-2 gap-4 border-t pt-2">
               {facts.map((fact) => (
                 <div key={fact.label} className="min-w-0">
                   <dt className="truncate text-[9px] uppercase tracking-wide text-muted-foreground">
@@ -530,9 +526,9 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
             </dl>
           </div>
 
-          {/* Every role keeps the same compact footer band; bottom service outputs
-              such as CA Issue sit below this divider. */}
-          <div aria-hidden="true" className="machine-node-reveal absolute inset-x-5 bottom-9 border-t" />
+          {hasBottomSocket && (
+            <div aria-hidden="true" className="machine-node-reveal absolute inset-x-5 bottom-9 border-t" />
+          )}
         </>
       )}
     </div>
