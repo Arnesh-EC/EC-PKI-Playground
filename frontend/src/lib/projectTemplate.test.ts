@@ -22,6 +22,25 @@ function operationShape(ops: StagedOp[]) {
 describe("supplied PKI project template", () => {
   beforeEach(() => buildPkiTemplateIntoStores("template-regression"))
 
+  it("matches the guide identities, forest level, and CA algorithm", () => {
+    const byName = new Map(
+      useTopologyStore.getState().nodes.map((node) => [node.data.name, node]),
+    )
+
+    expect([...byName.keys()].sort()).toEqual(["CA01", "CA02", "DC01", "SRV1"])
+    expect(byName.get("DC01")?.data.config?.forestLevel).toBe(
+      "Windows Server 2016",
+    )
+    expect(byName.get("CA01")?.data.config).toMatchObject({
+      caType: "Root",
+      keyAlgorithm: "ML-DSA-87",
+    })
+    expect(byName.get("CA02")?.data.config).toMatchObject({
+      caType: "Issuing",
+      keyAlgorithm: "ML-DSA-87",
+    })
+  })
+
   it("stages domain membership before dependent PKI services", () => {
     const { ops } = useStagingStore.getState()
 
