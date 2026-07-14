@@ -99,6 +99,13 @@ export const TEMPLATE_CATALOG: TemplateDef[] = [
         default: "Windows Server 2016",
       },
       {
+        key: "reverseZone",
+        label: "Reverse DNS Zone (optional)",
+        type: "text",
+        default: "",
+        placeholder: "100.168.192.in-addr.arpa",
+      },
+      {
         key: "domainAdminPassword",
         label: "Domain Admin Password",
         type: "password",

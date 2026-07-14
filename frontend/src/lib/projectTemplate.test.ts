@@ -86,4 +86,21 @@ describe("supplied PKI project template", () => {
       { kind: "CNAME", server: "DC01", subject: "SRV1", zone: "encon.pki", name: "pki" },
     ])
   })
+
+  it("derives PTR resources only when a reverse zone is configured", () => {
+    const dc = useTopologyStore
+      .getState()
+      .nodes.find((node) => node.data.name === "DC01")
+    expect(dc).toBeDefined()
+    useTopologyStore.getState().patchNodeData(dc!.id, {
+      config: {
+        ...dc!.data.config,
+        reverseZone: "100.168.192.in-addr.arpa",
+      },
+    })
+
+    const { nodes, edges } = useTopologyStore.getState()
+    const topology = buildDeployTopology(nodes, edges)
+    expect(topology.dnsRecords.filter((record) => record.kind === "PTR")).toHaveLength(3)
+  })
 })

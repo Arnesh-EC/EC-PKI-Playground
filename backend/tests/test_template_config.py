@@ -61,6 +61,31 @@ def test_validate_accepts_strong_dc_password():
     )
 
 
+def test_validate_accepts_optional_ipv4_reverse_zone():
+    validate_template_config(
+        "domainController",
+        {
+            "vmName": "dc01",
+            "template": "domainController",
+            "reverseZone": "100.168.192.in-addr.arpa",
+            "domainAdminPassword": "Str0ng-Lab-Pass!",
+        },
+    )
+
+
+def test_validate_rejects_invalid_reverse_zone():
+    with pytest.raises(ValueError):
+        validate_template_config(
+            "domainController",
+            {
+                "vmName": "dc01",
+                "template": "domainController",
+                "reverseZone": "192.168.100.0/24",
+                "domainAdminPassword": "Str0ng-Lab-Pass!",
+            },
+        )
+
+
 def test_domain_admin_password_is_a_secret_key():
     assert "domainAdminPassword" in secret_config_keys("domainController")
     assert secret_config_keys("certificateAuthority") == frozenset()

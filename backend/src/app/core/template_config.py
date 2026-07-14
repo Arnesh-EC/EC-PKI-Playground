@@ -68,6 +68,21 @@ _CERT_PATH = re.compile(r"^[A-Za-z]:\\[A-Za-z0-9 ._\\-]{1,120}$")
 _HTTP_URL = re.compile(r"^https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{1,200}$")
 
 
+def _reverse_zone(value: str) -> bool:
+    """Accept an optional IPv4 reverse-zone name such as 100.168.192.in-addr.arpa."""
+
+    if not value:
+        return True
+    normalized = value.lower().rstrip(".")
+    suffix = ".in-addr.arpa"
+    if not normalized.endswith(suffix):
+        return False
+    labels = normalized[: -len(suffix)].split(".")
+    return 1 <= len(labels) <= 4 and all(
+        label.isdigit() and 0 <= int(label) <= 255 for label in labels
+    )
+
+
 def _one_of(*options: str) -> Callable[[str], bool]:
     allowed = frozenset(options)
     return lambda v: v in allowed
@@ -116,6 +131,9 @@ TEMPLATE_CONFIG_FIELDS: dict[str, dict[str, FieldSpec]] = {
             ),
             "Windows Server 2016",
         ),
+        # Optional advanced override. When blank, no reverse zone/PTR resources
+        # are planned; operators can use an existing external reverse-DNS setup.
+        "reverseZone": FieldSpec(_reverse_zone, ""),
         # Operator-set; injected as a secret command param into domain joins and
         # the issuing-CA install. ``validate`` is a placeholder — secrets go
         # through ``password_policy_errors`` in ``validate_template_config``.
