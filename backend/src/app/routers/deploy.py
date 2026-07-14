@@ -1,8 +1,8 @@
 """Deploy-plan routes — compile a semantic topology and run it as one plan job.
 
 Mirrors ``vm.py``'s clone route: ``POST /deploy`` enqueues and returns immediately
-with a ``job_id``; the actual walk of the dependency graph happens in the Celery
-worker (``app.tasks.run_plan_task``), streaming per-op state over the existing
+with a ``job_id``; a Celery coordinator fans ready dependency-graph operations
+out to the worker pool, streaming per-op state over the existing
 ``/api/ws/jobs/{job_id}`` transport as one ``PlanStateMsg`` per transition.
 
 Vocabulary is exactly the five op kinds the frontend staging store can produce
@@ -455,10 +455,10 @@ async def deploy(
 
     The actual work runs in a separate worker process which opens its own ESXi
     connection against the shared target from the settings document (see
-    ``app.tasks.run_plan_task``) — this route validates the plan and, for
+    ``app.tasks.start_plan_task``) — this route validates the plan and, for
     plans containing real clones, that a target is configured at all.
     """
-    from app.tasks import run_plan_task  # local import: avoids loading Celery for every route
+    from app.tasks import start_plan_task  # local import: avoids loading Celery for every route
 
     compiled = _compile_or_422(req)
     # From this point forward, every check and the queued worker payload sees
@@ -596,7 +596,7 @@ async def deploy(
     transport.publish(job_id, QueuedMsg(), status=JobStatus.queued)
     # Owner role rides along so a minted agent's provisioning command is later
     # dispatched under the deploying user's role (both roles hold VM_PROVISION).
-    run_plan_task.delay(
+    start_plan_task.delay(
         job_id,
         req.model_dump(by_alias=True),
         user.role.value,

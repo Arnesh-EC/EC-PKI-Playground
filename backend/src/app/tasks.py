@@ -5,15 +5,16 @@ transport (``app.core.jobs.transport``). It reuses ``CloneProgressReducer`` and
 ``_clone_total_ops`` from the clone route unchanged, and ``map_vmkit_error`` for the
 same error → status mapping the synchronous routes use.
 
-The plan runner (``run_plan_task``) walks a validated deploy-plan DAG the same
-way. Every ``createVm`` op is a real vmkit clone booted from a
+The plan coordinator validates and preflights a deploy-plan DAG, then fans every
+ready operation out as an independent Celery task. Every ``createVm`` op is a
+real vmkit clone booted from a
 per-VM firstboot ISO (``core.firstboot``) that bakes in an address claimed
 from the guest IP pool (``core.ippool``); the other op kinds are timed stubs.
-Like the clone task, it opens its own ESXi connection against the shared
+Like the clone task, each clone operation opens its own ESXi connection against the shared
 org-wide target from the Mongo settings document (``core.esxi.load_target_sync``
 — the async client is API-process-bound), so the worker needs Mongo +
 ``SETTINGS_ENC_KEY``, not ``ESXI_*`` env vars. Its Mongo writes (IP
-allocation, vm_registry) go through one short-lived sync client per task
+allocation, vm_registry, scheduler state) go through one short-lived sync client per task
 (``core.db.sync.worker_db``).
 """
 
@@ -230,14 +231,77 @@ def destroy_vm_task(job_id: str, name: str) -> None:
         )
 
 
-def _op_progress_publisher(state: dict[str, OpRunState], op_id: str, push):
+def _visible_steps(state: dict[str, OpRunState], op_id: str) -> dict[str, StepRunState]:
+    current = state.get(op_id)
+    return dict(current.steps) if current else {}
+
+
+def _set_visible_step(
+    state: dict[str, OpRunState],
+    op_id: str,
+    step_id: str,
+    status: str,
+    push,
+    *,
+    percent: float | None = None,
+    phase: str | None = None,
+    detail: str | None = None,
+    result: dict | None = None,
+) -> None:
+    """Update one manifest child without discarding sibling step state."""
+
+    steps = _visible_steps(state, op_id)
+    steps[step_id] = StepRunState(
+        status=status, percent=percent, phase=phase, detail=detail
+    )
+    current = state.get(op_id)
+    state[op_id] = OpRunState(
+        status="running",
+        percent=current.percent if current else percent,
+        phase=phase or (current.phase if current else None),
+        result=result if result is not None else (current.result if current else None),
+        steps=steps,
+    )
+    push()
+
+
+def _fail_running_visible_step(
+    state: dict[str, OpRunState], op_id: str, detail: str
+) -> dict[str, StepRunState]:
+    """Mark the active manifest child failed and return the preserved tree."""
+
+    steps = _visible_steps(state, op_id)
+    for step_id, step in steps.items():
+        if step.status == "running":
+            steps[step_id] = StepRunState(
+                status="error", percent=step.percent, phase=step.phase, detail=detail
+            )
+            break
+    return steps
+
+
+def _op_progress_publisher(
+    state: dict[str, OpRunState], op_id: str, push, *, step_id: str | None = None
+):
     """``Publish``-shaped callable that folds ``ProgressMsg`` samples from
     ``CloneProgressReducer`` into this op's slot in the plan state, then pushes
     the whole snapshot."""
 
     def _publish(msg) -> None:
         if isinstance(msg, ProgressMsg):
-            state[op_id] = OpRunState(status="running", percent=msg.percent, phase=msg.phase)
+            steps = _visible_steps(state, op_id)
+            if step_id is not None:
+                steps[step_id] = StepRunState(
+                    status="running", percent=msg.percent, phase=msg.phase
+                )
+            current = state.get(op_id)
+            state[op_id] = OpRunState(
+                status="running",
+                percent=msg.percent,
+                phase=msg.phase,
+                result=current.result if current else None,
+                steps=steps,
+            )
             push()
 
     return _publish
@@ -384,13 +448,17 @@ def _provision_cloned_vm(
     # Carried on every running push so the frontend learns the agent identity
     # (and can show its presence dot) long before the op finishes.
     partial = {"agentVmId": vm_id}
-    state[op.id] = OpRunState(
-        status="running", percent=100.0, phase="Waiting for agent", result=partial
+    _set_visible_step(
+        state, op.id, "agent-ready", "running", push,
+        percent=0.0, phase="Waiting for agent", result=partial,
     )
-    push()
     op_started = time.monotonic()
     try:
         agentbus.wait_for_agent(vm_id, timeout_s=settings.agent_phone_home_timeout_s)
+        _set_visible_step(
+            state, op.id, "agent-ready", "done", push,
+            percent=100.0, phase="Agent connected", result=partial,
+        )
         logger.info(
             "op %s: agent %s phoned home after %.1fs",
             op.id, vm_id, time.monotonic() - op_started,
@@ -402,10 +470,10 @@ def _provision_cloned_vm(
         # an agent that reboot is about to kill (legacy agents fall back to
         # the connection-stability dwell inside wait_for_settled_boot).
         def _boot_phase(phase: str) -> None:
-            state[op.id] = OpRunState(
-                status="running", percent=100.0, phase=phase, result=partial
+            _set_visible_step(
+                state, op.id, "boot-settle", "running", push,
+                phase=phase, result=partial,
             )
-            push()
 
         _boot_phase("Waiting for boot to settle")
         settle_started = time.monotonic()
@@ -421,9 +489,14 @@ def _provision_cloned_vm(
             "op %s: boot settled on %s after %.1fs",
             op.id, vm_id, time.monotonic() - settle_started,
         )
+        _set_visible_step(
+            state, op.id, "boot-settle", "done", push,
+            percent=100.0, phase="Boot settled", result=partial,
+        )
         if steps:
             state[op.id] = OpRunState(
-                status="running", percent=0.0, phase="Provisioning", result=partial
+                status="running", percent=0.0, phase="Provisioning", result=partial,
+                steps=state[op.id].steps,
             )
             push()
             node = NodeContext(
@@ -470,9 +543,10 @@ def _provision_cloned_vm(
     except (SequenceError, agentbus.AgentUnreachableError, agentbus.DispatchError,
             agentbus.ReconnectTimeoutError) as exc:
         _set_provision_state(conn_db, vm_name, "failed")
+        detail = f"provisioning failed: {exc}"
         state[op.id] = OpRunState(
-            status="error", detail=f"provisioning failed: {exc}",
-            steps=state[op.id].steps,
+            status="error", detail=detail,
+            steps=_fail_running_visible_step(state, op.id, detail),
         )
         push()
         return False
@@ -536,8 +610,10 @@ def _run_clone_op(
     iso_id = op.params.get("isoId")
     authored = bool(op.files) or bool(iso_id)
     bundling = settings.orchestrator_bundling_enabled and not authored
-    state[op.id] = OpRunState(status="running", percent=0.0, phase="Starting")
-    push()
+    _set_visible_step(
+        state, op.id, "prepare", "running", push,
+        percent=0.0, phase="Preparing guest and first-boot media",
+    )
 
     ip: str | None = None
     net = None
@@ -547,25 +623,35 @@ def _run_clone_op(
         if net is None:
             # The route rejects plans without a configured range; hitting this
             # means it was cleared between enqueue and execution.
-            state[op.id] = OpRunState(status="error", detail="Guest IP range is not configured.")
+            detail = "Guest IP range is not configured."
+            state[op.id] = OpRunState(
+                status="error", detail=detail,
+                steps=_fail_running_visible_step(state, op.id, detail),
+            )
             push()
             return False
         # Fail cleanly BEFORE claiming an address if the agent binary is missing
         # on the worker host — an operator config error, not a per-VM one.
         if bundling and not Path(settings.orchestrator_agent_path).is_file():
+            detail = (
+                "Orchestrator agent binary not found on the worker host "
+                "(ORCHESTRATOR_AGENT_PATH)."
+            )
             state[op.id] = OpRunState(
                 status="error",
-                detail=(
-                    "Orchestrator agent binary not found on the worker host "
-                    "(ORCHESTRATOR_AGENT_PATH)."
-                ),
+                detail=detail,
+                steps=_fail_running_visible_step(state, op.id, detail),
             )
             push()
             return False
         try:
             ip = allocate_ip_sync(db, vm_name, job_id)
         except IpPoolExhaustedError as exc:
-            state[op.id] = OpRunState(status="error", detail=str(exc))
+            detail = str(exc)
+            state[op.id] = OpRunState(
+                status="error", detail=detail,
+                steps=_fail_running_visible_step(state, op.id, detail),
+            )
             push()
             return False
 
@@ -646,10 +732,24 @@ def _run_clone_op(
                 power_on=True,
                 **_plan_clone_defaults(image_config),
             )
+            _set_visible_step(
+                state, op.id, "prepare", "done", push,
+                percent=100.0, phase="Guest and first-boot media ready",
+            )
+            _set_visible_step(
+                state, op.id, "clone", "running", push,
+                percent=0.0, phase="Cloning virtual machine",
+            )
             reducer = CloneProgressReducer(
-                _op_progress_publisher(state, op.id, push), _clone_total_ops(req)
+                _op_progress_publisher(state, op.id, push, step_id="clone"),
+                _clone_total_ops(req),
             )
             result = clone_workflow(conn, progress=reducer, **req.model_dump())
+
+        _set_visible_step(
+            state, op.id, "clone", "done", push,
+            percent=100.0, phase="Virtual machine cloned and powered on",
+        )
 
         vm = get_vm_by_name(conn.content, vm_name)
         _registry_upsert_sync(
@@ -685,6 +785,15 @@ def _run_clone_op(
             )
             if not provisioned:
                 return False
+        else:
+            for step_id, phase in (
+                ("agent-ready", "No orchestrator agent required"),
+                ("boot-settle", "No orchestrator boot wait required"),
+            ):
+                _set_visible_step(
+                    state, op.id, step_id, "done", push,
+                    percent=100.0, phase=phase,
+                )
 
         state[op.id] = OpRunState(
             status="done",
@@ -700,6 +809,7 @@ def _run_clone_op(
                 **({"ip": ip} if ip else {}),
                 **({"agentVmId": vm_id} if vm_id else {}),
             },
+            steps=state[op.id].steps,
         )
         push()
         return True
@@ -709,18 +819,30 @@ def _run_clone_op(
         # address baked into its ISO, so the allocation is deliberately KEPT;
         # tearing the VM down is what releases it.
         status, detail = map_vmkit_error(exc)
-        state[op.id] = OpRunState(status="error", detail=f"{status}: {detail}")
+        detail = f"{status}: {detail}"
+        state[op.id] = OpRunState(
+            status="error", detail=detail,
+            steps=_fail_running_visible_step(state, op.id, detail),
+        )
         push()
         return False
     except VmkitError as exc:
         status, detail = map_vmkit_error(exc)
         _cleanup_failed_clone(conn, db, vm_name, ip)
-        state[op.id] = OpRunState(status="error", detail=f"{status}: {detail}")
+        detail = f"{status}: {detail}"
+        state[op.id] = OpRunState(
+            status="error", detail=detail,
+            steps=_fail_running_visible_step(state, op.id, detail),
+        )
         push()
         return False
     except Exception as exc:  # noqa: BLE001 — surface as an op-level failure, not a plan crash
         _cleanup_failed_clone(conn, db, vm_name, ip)
-        state[op.id] = OpRunState(status="error", detail=str(exc))
+        detail = str(exc)
+        state[op.id] = OpRunState(
+            status="error", detail=detail,
+            steps=_fail_running_visible_step(state, op.id, detail),
+        )
         push()
         return False
 
@@ -1261,6 +1383,281 @@ def run_plan_task(
         transport.publish(
             job_id, ErrorMsg(status=500, detail=str(exc)), status=JobStatus.error, terminal=True
         )
+
+
+_PLAN_TERMINAL = frozenset({"done", "error", "cancelled"})
+
+
+def ready_plan_operations(ops, statuses: dict[str, str]) -> tuple[list[str], list[str]]:
+    """Pure scheduler decision: (ready ids, dependency-blocked ids)."""
+
+    ready: list[str] = []
+    blocked: list[str] = []
+    for op in ops:
+        if statuses.get(op.id) != "pending":
+            continue
+        dependency_states = [statuses.get(dep, "pending") for dep in op.depends_on]
+        if any(status in {"error", "cancelled"} for status in dependency_states):
+            blocked.append(op.id)
+        elif all(status == "done" for status in dependency_states):
+            ready.append(op.id)
+    return ready, blocked
+
+
+def _scheduler_states(db, job_id: str) -> dict[str, OpRunState]:
+    doc = db["plan_runs"].find_one({"jobId": job_id}, {"scheduler.ops": 1}) or {}
+    raw = (doc.get("scheduler") or {}).get("ops") or {}
+    return {op_id: OpRunState(**value) for op_id, value in raw.items()}
+
+
+def _publish_scheduler_states(db, job_id: str) -> dict[str, OpRunState]:
+    states = _scheduler_states(db, job_id)
+    transport.publish(
+        job_id, PlanStateMsg(ops=states), status=JobStatus.running
+    )
+    return states
+
+
+def _persist_scheduler_op(db, job_id: str, op_id: str, state: OpRunState) -> None:
+    db["plan_runs"].update_one(
+        {"jobId": job_id},
+        {"$set": {
+            f"scheduler.ops.{op_id}": state.model_dump(),
+            "scheduler.updatedAt": now_ms(),
+            "updatedAt": now_ms(),
+        }},
+    )
+
+
+def _advance_plan(job_id: str, request, plan: dict, owner_role: str,
+                  preflight_snapshot: dict | None, owner: str | None, db) -> None:
+    """Atomically claim newly-ready operations and publish terminal state."""
+
+    states = _scheduler_states(db, job_id)
+    statuses = {op_id: state.status for op_id, state in states.items()}
+    if transport.cancel_mode(job_id):
+        blocked = [op.id for op in request.ops if statuses.get(op.id) == "pending"]
+        ready = []
+    else:
+        ready, blocked = ready_plan_operations(request.ops, statuses)
+
+    while blocked:
+        changed = False
+        for op_id in blocked:
+            detail = (
+                "Skipped: deployment cancellation was requested."
+                if transport.cancel_mode(job_id)
+                else "Skipped: a dependency failed or was cancelled."
+            )
+            result = db["plan_runs"].update_one(
+                {"jobId": job_id, f"scheduler.ops.{op_id}.status": "pending"},
+                {"$set": {
+                    f"scheduler.ops.{op_id}": OpRunState(
+                        status="cancelled", detail=detail
+                    ).model_dump(),
+                    "scheduler.updatedAt": now_ms(),
+                }},
+            )
+            if result.modified_count:
+                statuses[op_id] = "cancelled"
+                changed = True
+        if transport.cancel_mode(job_id):
+            break
+        if not changed:
+            statuses = {
+                op_id: state.status
+                for op_id, state in _scheduler_states(db, job_id).items()
+            }
+        ready, blocked = ready_plan_operations(request.ops, statuses)
+
+    enqueue_failed = False
+    for op_id in ready:
+        result = db["plan_runs"].update_one(
+            {"jobId": job_id, f"scheduler.ops.{op_id}.status": "pending"},
+            {"$set": {
+                f"scheduler.ops.{op_id}.status": "queued",
+                "scheduler.updatedAt": now_ms(),
+            }},
+        )
+        if not result.modified_count:
+            continue
+        statuses[op_id] = "queued"
+        try:
+            run_plan_operation_task.apply_async(
+                args=[job_id, op_id, plan, owner_role, preflight_snapshot, owner],
+                task_id=f"{job_id}:{op_id}",
+            )
+        except Exception as exc:
+            enqueue_failed = True
+            _persist_scheduler_op(
+                db, job_id, op_id,
+                OpRunState(status="error", detail=f"Unable to enqueue operation: {exc}"),
+            )
+
+    states = _publish_scheduler_states(db, job_id)
+    if enqueue_failed:
+        _advance_plan(
+            job_id, request, plan, owner_role, preflight_snapshot, owner, db
+        )
+        return
+    if states and all(state.status in _PLAN_TERMINAL for state in states.values()):
+        transport.publish(
+            job_id,
+            DoneMsg(result={
+                "ops": {op_id: state.model_dump() for op_id, state in states.items()}
+            }),
+            status=JobStatus.done,
+            terminal=True,
+        )
+
+
+@celery_app.task(name="start_plan_v2")
+def start_plan_task(
+    job_id: str,
+    plan: dict,
+    owner_role: str = "guest",
+    preflight_snapshot: dict | None = None,
+    owner: str | None = None,
+) -> None:
+    """Compile, preflight, persist, and fan out every ready plan operation."""
+
+    from app.routers.deploy import DeployRequest, PlanOpKind
+    from app.core.topology import compile_plan
+
+    conn = None
+    request = None
+    try:
+        request = DeployRequest(**plan)
+        request.ops = compile_plan(request.topology, request.ops).operations
+        plan = request.model_dump(by_alias=True)
+        with worker_db() as db:
+            _initialize_plan_run(
+                db, job_id, request, owner_role, owner, preflight_snapshot
+            )
+            from app.routers.iso import gc_orphan_isos
+
+            gc_orphan_isos(db)
+            _sweep_stale_agents_sync(db)
+            if any(op.kind is PlanOpKind.create_vm for op in request.ops):
+                conn = _open_worker_connection()
+                _verify_worker_infrastructure_preflight(
+                    conn, db, request.ops, preflight_snapshot
+                )
+            initial = {
+                op.id: OpRunState(status="pending").model_dump()
+                for op in request.ops
+            }
+            db["plan_runs"].update_one(
+                {"jobId": job_id},
+                {"$set": {
+                    "scheduler.version": 2,
+                    "scheduler.ops": initial,
+                    "scheduler.updatedAt": now_ms(),
+                }},
+            )
+            transport.publish(job_id, RunningMsg(), status=JobStatus.running)
+            _advance_plan(
+                job_id, request, plan, owner_role, preflight_snapshot, owner, db
+            )
+    except Exception as exc:  # noqa: BLE001
+        transport.publish(
+            job_id, ErrorMsg(status=500, detail=str(exc)),
+            status=JobStatus.error, terminal=True,
+        )
+    finally:
+        if conn is not None:
+            Disconnect(conn.si)
+
+
+@celery_app.task(name="run_plan_operation_v2")
+def run_plan_operation_task(
+    job_id: str,
+    op_id: str,
+    plan: dict,
+    owner_role: str = "guest",
+    preflight_snapshot: dict | None = None,
+    owner: str | None = None,
+) -> None:
+    """Run one atomically claimed operation, then release its dependents."""
+
+    from app.routers.deploy import DeployRequest, PlanOpKind
+    from app.core.topology import compile_plan
+
+    conn = None
+    request = None
+    try:
+        request = DeployRequest(**plan)
+        request.ops = compile_plan(request.topology, request.ops).operations
+        op = next(item for item in request.ops if item.id == op_id)
+        with worker_db() as db:
+            claim = db["plan_runs"].update_one(
+                {"jobId": job_id, f"scheduler.ops.{op_id}.status": "queued"},
+                {"$set": {
+                    f"scheduler.ops.{op_id}.status": "running",
+                    f"scheduler.ops.{op_id}.percent": 0.0,
+                    f"scheduler.ops.{op_id}.phase": "Starting",
+                    "scheduler.updatedAt": now_ms(),
+                }},
+            )
+            if not claim.modified_count:
+                return
+            states = _scheduler_states(db, job_id)
+            if transport.cancel_mode(job_id):
+                states[op_id] = OpRunState(
+                    status="cancelled", detail="Skipped: deployment cancellation was requested."
+                )
+                _persist_scheduler_op(db, job_id, op_id, states[op_id])
+                _advance_plan(
+                    job_id, request, plan, owner_role, preflight_snapshot, owner, db
+                )
+                return
+
+            def push() -> None:
+                _persist_scheduler_op(db, job_id, op_id, states[op_id])
+                _publish_scheduler_states(db, job_id)
+
+            push()
+            if op.kind is PlanOpKind.create_vm:
+                conn = _open_worker_connection()
+                profiles = infrastructure_profiles_from_doc(
+                    db["settings"].find_one({"_id": "global"})
+                )
+                ok = _run_clone_op(
+                    conn, db, op, request.ops, job_id, states, push,
+                    owner_role, request.topology,
+                    profiles[role_for_template(
+                        op.params["template"], op.params.get("caType")
+                    )],
+                )
+            else:
+                result = _run_sequence_op(
+                    db, op, request.ops, job_id, owner_role, states, push,
+                    request.topology,
+                )
+                ok = _simulate_op(op, states, push) if result is None else result
+            if not ok and states[op_id].status not in {"error", "cancelled"}:
+                states[op_id] = OpRunState(status="error", detail="Operation failed.")
+                push()
+            _advance_plan(
+                job_id, request, plan, owner_role, preflight_snapshot, owner, db
+            )
+    except Exception as exc:  # noqa: BLE001
+        if request is None:
+            transport.publish(
+                job_id, ErrorMsg(status=500, detail=str(exc)),
+                status=JobStatus.error, terminal=True,
+            )
+            return
+        with worker_db() as db:
+            _persist_scheduler_op(
+                db, job_id, op_id, OpRunState(status="error", detail=str(exc))
+            )
+            _advance_plan(
+                job_id, request, plan, owner_role, preflight_snapshot, owner, db
+            )
+    finally:
+        if conn is not None:
+            Disconnect(conn.si)
 
 
 @celery_app.task(name="reconcile_plan")

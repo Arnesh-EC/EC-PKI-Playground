@@ -230,11 +230,16 @@ function applyPlanState(opsState: Record<string, OpRunState>, deploymentJobId?: 
     if (!op) continue
 
     setOpState(opId, {
-      status: runState.status,
+      status: runState.status === "queued" ? OP_STATUS.pending : runState.status,
       progress: runState.percent,
       phase: runState.status === "running" ? runState.phase : undefined,
       detail: runState.detail,
-      executionSteps: runState.steps,
+      executionSteps: runState.steps
+        ? Object.fromEntries(Object.entries(runState.steps).map(([id, step]) => [
+            id,
+            { ...step, status: step.status === "queued" ? OP_STATUS.pending : step.status },
+          ]))
+        : undefined,
     })
 
     if (op.kind === OP_KIND.createVm) {

@@ -38,7 +38,7 @@ export interface ErrorEvent {
 
 /** Current run state of one op within a deploy plan — mirrors the backend's `OpRunState`. */
 export interface OpRunState {
-  status: "pending" | "running" | "done" | "error" | "cancelled"
+  status: "pending" | "queued" | "running" | "done" | "error" | "cancelled"
   percent?: number
   phase?: string
   detail?: string
@@ -47,7 +47,7 @@ export interface OpRunState {
 }
 
 export interface StepRunState {
-  status: "pending" | "running" | "done" | "error" | "cancelled"
+  status: "pending" | "queued" | "running" | "done" | "error" | "cancelled"
   percent?: number
   phase?: string
   detail?: string
