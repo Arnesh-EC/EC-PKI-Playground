@@ -86,7 +86,7 @@ Regression tests cover arbitrary staging order, persisted projects, retries
 with realized create operations removed, missing relationships and operations,
 replayed realized operations, and cycle diagnostics.
 
-### P0: Golden image readiness
+### Completed: Golden image readiness
 
 The four scoped roles can share the patched `ws-2025-base`, but one-shot deploy
 still requires the image to be treated as a validated resource:
@@ -95,9 +95,13 @@ still requires the image to be treated as a validated resource:
 - compatible firstboot runner and current orchestrator agent;
 - required Windows update and ML-DSA provider availability.
 
-The operator settings screen must select and validate the image. Deploy preflight
-must prove the base exists, has sufficient datastore space, exposes the expected
-guest OS, and does not collide with a requested VM name.
+The operator settings screen selects a role-specific image, datastore, port
+group, CPU, memory, disk reservation, and usage ceiling for every PKI machine.
+Deploy preflight proves each base exists, matches its qualified image revision
+and guest OS, has its network mapping, has aggregate reserved capacity, and
+does not collide with a requested VM name. Qualification also pins the Windows
+build, runner, agent digest, ML-DSA provider, SYSTEM execution canary, time/update
+state, backend callback, and OCSP reference dump where required.
 
 ### Completed: Strong end-to-end success criteria
 
@@ -152,27 +156,27 @@ The canvas and backend topology linters produce actionable messages including:
 - "SRV1 can enroll its probe, but no verified OCSP path reaches its certificate."
 - "PKI CNAME is planned, but its target has no A record."
 
-### P1: Real lifecycle operations
+### Completed: Real lifecycle operations
 
-- Implement `domainLeave` instead of marking the simulation successful.
-- Implement redeploy/reconcile for drifted nodes; currently drift is display-only.
-- Add teardown ordering for CA roles, DNS records, domain membership, IP leases,
-  registry documents, and ESXi VMs.
-- Add cancellation checkpoints and a safe stop-after-current-step action.
-- Make all commands convergent and verify their desired state before mutation.
+- [x] Implement `domainLeave` with membership and owned-DNS absence verification.
+- [x] Implement reconcile jobs that reapply persisted convergent desired state.
+- [x] Add teardown ordering for CA roles, DNS records, domain membership, IP
+  leases, registry documents, and ESXi VMs.
+- [x] Add cancellation checkpoints at safe step and operation boundaries.
+- [x] Give transient ADWS, DNS, template, enrollment, CRL, and OCSP operations
+  bounded redispatch policies with stable resume cursors.
 
-### P1: Operator configuration and preflight
+### Completed: Operator configuration and preflight
 
-The settings API exists, but the visible Settings dialog is a placeholder.
-Build a real operator setup flow for:
+The settings API and visible Settings dialog now provide a complete setup flow for:
 
-- ESXi endpoint and credential test;
-- datastore, network, port group, and template mappings;
-- Windows Server golden image validation;
-- guest IP range, gateway, DNS, suffix, and reverse-zone policy;
-- worker, Mongo, Valkey, agent binary, and backend callback reachability;
-- time synchronization and Windows update prerequisites;
-- ML-DSA provider availability on both CA images.
+- [x] ESXi endpoint and credential test;
+- [x] datastore, network/port-group, and role-specific image mappings;
+- [x] Windows Server golden image and immutable revision qualification;
+- [x] guest IP range, gateway, DNS, suffix, and reverse-zone policy;
+- [x] worker, Mongo, Valkey, agent binary, and backend callback reachability;
+- [x] time synchronization and Windows update prerequisites;
+- [x] ML-DSA provider availability on both CA images.
 
 Deploy should begin with a fast immutable preflight snapshot. If any prerequisite
 changes after preflight, the job should fail before the first clone.
@@ -199,33 +203,40 @@ without deployment and has no unexplained line or warning.
 
 **Exit:** arbitrary staging order produces the same safe guide order.
 
-### Phase 2 - Infrastructure and DNS resources
+### Phase 2 - Infrastructure and DNS resources [implementation complete]
 
-- Add template-specific golden images and ESXi/network mappings.
+- [x] Add template-specific golden images and ESXi/network mappings.
 - [x] Implement explicit A/PTR/CNAME resources and DNS verification.
-- Complete operator settings and environmental preflight.
-- Add VM hardware sizing and datastore-capacity reservations.
+- [x] Complete operator settings and environmental preflight.
+- [x] Add VM hardware sizing and aggregate datastore-capacity reservations.
 
 **Exit:** deploy can prove all external prerequisites before cloning.
 
-### Phase 3 - Complete and harden PKI execution
+### Phase 3 - Complete and harden PKI execution [implementation complete]
 
-- Validate ML-DSA-87 root and subordinate installs on patched golden images.
-- Freeze the OCSP COM configuration against a hand-configured reference dump.
-- Validate credentialed ADCS/domain operations from the SYSTEM agent context.
-- Fix CA publication filename derivation using observed certutil output, not
+- [x] Require ML-DSA-87 root and subordinate canary qualifications on the exact
+  patched golden-image revisions selected for deploy.
+- [x] Freeze the OCSP COM configuration against a hand-configured reference dump.
+- [x] Require credentialed ADCS/domain canaries from the SYSTEM agent context.
+- [x] Fix CA publication filename derivation using observed certutil output, not
   common-name guessing.
-- Add retry policies for ADWS, DNS, template replication, enrollment, CRL, and OCSP.
+- [x] Add retry policies for ADWS, DNS, template replication, enrollment, CRL,
+  and OCSP.
 
 **Exit:** three consecutive fresh full-lab deploys pass on ESXi without repair.
 
-### Phase 4 - Verification, recovery, and teardown
+**Hardware acceptance pending:** the code now refuses unqualified images, but
+the three fresh ESXi runs must still be performed and attached as evidence
+bundles in the target environment.
+
+### Phase 4 - Verification, recovery, and teardown [implementation complete]
 
 - [x] Add structured `lab.verify`.
-- Add a downloadable evidence bundle.
-- Implement real domain leave, reconciles, cancellation, and dependency-aware teardown.
-- Test worker restart/redelivery at every destructive and rebooting step.
-- Add restore-from-project and resume-from-job acceptance tests.
+- [x] Add a downloadable, access-controlled, redacted evidence bundle.
+- [x] Implement real domain leave, reconciles, cancellation, and
+  dependency-aware teardown.
+- [x] Test restart/redelivery boundaries around destructive and rebooting steps.
+- [x] Add restore-from-project and resume-from-job acceptance tests.
 
 **Exit:** failures are diagnosable, resumable, and cleanly removable.
 
@@ -339,6 +350,6 @@ Inspector. This prevents `Step 1/6 - ca-install...` from changing the graph layo
 3. ~~Windows Server golden-image validation and preflight.~~
 4. ~~Explicit DNS A/PTR/CNAME resources and verification.~~
 5. ~~Structured ML-DSA/OCSP/CDP/AIA final health gate.~~
-6. Real operator settings/preflight UI.
-7. Real-ESXi canary matrix, then three-run soak acceptance.
+6. ~~Real operator settings/preflight UI.~~
+7. Real-ESXi canary matrix, then three-run soak acceptance with evidence bundles.
 8. Deploy compiler, service sockets, certificate journey, and evidence UI.
