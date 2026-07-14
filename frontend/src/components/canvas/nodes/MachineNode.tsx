@@ -330,7 +330,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
           ? gesture.sourceNodeId === id
             ? spec.type === "source"
             : spec.type === "target" && compatibility?.ok === true
-          : selected
+          : true
         const appearance = SOCKET_APPEARANCE[spec.socket]
         const SocketIcon = appearance.icon
         const guidance = SERVICE_SOCKET_GUIDANCE[spec.socket]
@@ -341,6 +341,8 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
             type={spec.type}
             position={placement.position}
             style={placement.style}
+            isConnectableStart={spec.type === "source"}
+            isConnectableEnd={spec.type === "target"}
             title={`${guidance.label} · ${guidance.intent}`}
             aria-label={`${guidance.label} socket: ${guidance.intent}`}
             tabIndex={visible ? 0 : -1}
