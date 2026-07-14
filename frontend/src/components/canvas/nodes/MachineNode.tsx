@@ -44,6 +44,7 @@ import { ProgressBar } from "./ProgressBar"
 
 const MACHINE_NODE_WIDTH = 304
 const MACHINE_NODE_HEIGHT = 216
+const DRAFT_NODE_HEIGHT = 92
 
 const SOCKET_APPEARANCE: Record<
   ServiceSocket,
@@ -310,6 +311,8 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
   const compatibleDestination = gesture && gesture.sourceNodeId !== id &&
     socketSpecs.some((spec) => spec.type === "target" && socketCompatibility(spec.socket)?.ok)
   const dimmedByGesture = gesture && gesture.sourceNodeId !== id && !compatibleDestination
+  const isDraft = data.lifecycle === LIFECYCLE.draft
+  const nodeHeight = isDraft ? DRAFT_NODE_HEIGHT : MACHINE_NODE_HEIGHT
 
   return (
     <div
@@ -317,16 +320,19 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         width: MACHINE_NODE_WIDTH,
         minWidth: MACHINE_NODE_WIDTH,
         maxWidth: MACHINE_NODE_WIDTH,
-        height: MACHINE_NODE_HEIGHT,
-        minHeight: MACHINE_NODE_HEIGHT,
-        maxHeight: MACHINE_NODE_HEIGHT,
+        height: nodeHeight,
       }}
       onAnimationEnd={(event) => {
         if (event.animationName === "trust-gravity-settle") updateNodeInternals(id)
       }}
+      onTransitionEnd={(event) => {
+        if (event.target === event.currentTarget && event.propertyName === "height") {
+          updateNodeInternals(id)
+        }
+      }}
       className={cn(
         "group/node relative overflow-visible rounded-xl border bg-card text-card-foreground shadow-sm select-none",
-        "transition-shadow",
+        "transition-[height,box-shadow,opacity] duration-300 ease-out",
         tier === "root" && "trust-body trust-body-root",
         tier === "intermediate" && "trust-body trust-body-intermediate",
         tier === "issuing" && "trust-body trust-body-issuing",
@@ -384,7 +390,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
                 if (gesture && spec.type === "target") hoverTarget()
               }}
               className={cn(
-                "service-socket !z-20 !h-3 !w-3 !rounded-full !border-0 !shadow-sm",
+                "service-socket machine-node-service-reveal !z-20 !h-3 !w-3 !rounded-full !border-0 !shadow-sm",
                 "transition-opacity duration-150 focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring",
                 appearance.dotClassName,
                 visible
@@ -396,7 +402,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
               aria-hidden="true"
               style={placement.labelStyle}
               className={cn(
-                "pointer-events-none absolute z-10 flex max-w-[132px] items-center gap-1 rounded bg-card/95 px-1 py-1",
+                "machine-node-service-reveal pointer-events-none absolute z-10 flex max-w-[132px] items-center gap-1 rounded bg-card/95 px-1 py-1",
                 "text-[10px] font-medium leading-none text-muted-foreground transition-opacity duration-150",
                 !gesture || visible ? "opacity-100" : "opacity-0",
                 placement.labelClassName,
@@ -426,66 +432,74 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         {data.orchestratorVmId && <AgentStatusDot vmId={data.orchestratorVmId} />}
       </div>
 
-      {/* Status rows mirror the service rows on the opposite edge. */}
-      <div className="px-5 pt-2">
-        <div className="flex h-6 items-center">
+      {isDraft ? (
+        <div className="flex h-10 items-center px-5">
           <LifecycleBadge lifecycle={data.lifecycle} />
         </div>
-
-        <div className="flex h-6 min-w-0 items-center">
-          {activePhase ? (
-            <div className="group/phase relative min-w-0">
-              <span
-                className="block min-w-0 truncate text-[10px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                tabIndex={0}
-                aria-describedby={`phase-${id}`}
-              >
-                {data.phase ?? "Starting"}
-              </span>
-              <div
-                id={`phase-${id}`}
-                role="tooltip"
-                className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-64 rounded-md border bg-popover px-2 py-1.5 text-[10px] leading-snug text-popover-foreground shadow-lg group-hover/phase:block group-focus-within/phase:block"
-              >
-                {data.phase ?? "Starting"}
-              </div>
-              <ProgressBar pct={data.progress ?? 0} />
+      ) : (
+        <>
+          {/* Status rows mirror the service rows on the opposite edge. */}
+          <div className="machine-node-reveal px-5 pt-2">
+            <div className="flex h-6 items-center">
+              <LifecycleBadge lifecycle={data.lifecycle} />
             </div>
-          ) : warning ? (
-            <span
-              className="flex min-w-0 items-center gap-1 text-[10px] text-red-500"
-              title={warning}
-            >
-              <AlertTriangle className="h-3 w-3 shrink-0" />
-              <span className="truncate">{warning}</span>
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-[10px] text-emerald-500">
-              <CheckCircle2 className="h-3 w-3 shrink-0" />
-              No active warning
-            </span>
-          )}
-        </div>
 
-        <div aria-hidden="true" className="h-6" />
-
-        <dl className="grid h-12 grid-cols-2 gap-4 border-t pt-2">
-          {facts.map((fact) => (
-            <div key={fact.label} className="min-w-0">
-              <dt className="truncate text-[9px] uppercase tracking-wide text-muted-foreground">
-                {fact.label}
-              </dt>
-              <dd className="truncate text-[10px] font-medium" title={fact.value}>
-                {fact.value}
-              </dd>
+            <div className="flex h-6 min-w-0 items-center">
+              {activePhase ? (
+                <div className="group/phase relative min-w-0">
+                  <span
+                    className="block min-w-0 truncate text-[10px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    tabIndex={0}
+                    aria-describedby={`phase-${id}`}
+                  >
+                    {data.phase ?? "Starting"}
+                  </span>
+                  <div
+                    id={`phase-${id}`}
+                    role="tooltip"
+                    className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-64 rounded-md border bg-popover px-2 py-1.5 text-[10px] leading-snug text-popover-foreground shadow-lg group-hover/phase:block group-focus-within/phase:block"
+                  >
+                    {data.phase ?? "Starting"}
+                  </div>
+                  <ProgressBar pct={data.progress ?? 0} />
+                </div>
+              ) : warning ? (
+                <span
+                  className="flex min-w-0 items-center gap-1 text-[10px] text-red-500"
+                  title={warning}
+                >
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{warning}</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-[10px] text-emerald-500">
+                  <CheckCircle2 className="h-3 w-3 shrink-0" />
+                  No active warning
+                </span>
+              )}
             </div>
-          ))}
-        </dl>
-      </div>
 
-      {/* Every role keeps the same compact footer band; bottom service outputs
-          such as CA Issue sit below this divider. */}
-      <div aria-hidden="true" className="absolute inset-x-5 bottom-9 border-t" />
+            <div aria-hidden="true" className="h-6" />
+
+            <dl className="grid h-12 grid-cols-2 gap-4 border-t pt-2">
+              {facts.map((fact) => (
+                <div key={fact.label} className="min-w-0">
+                  <dt className="truncate text-[9px] uppercase tracking-wide text-muted-foreground">
+                    {fact.label}
+                  </dt>
+                  <dd className="truncate text-[10px] font-medium" title={fact.value}>
+                    {fact.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          {/* Every role keeps the same compact footer band; bottom service outputs
+              such as CA Issue sit below this divider. */}
+          <div aria-hidden="true" className="machine-node-reveal absolute inset-x-5 bottom-9 border-t" />
+        </>
+      )}
     </div>
   )
 }

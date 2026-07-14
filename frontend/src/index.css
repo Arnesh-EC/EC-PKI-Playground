@@ -170,6 +170,30 @@
   100% { transform: translateY(0) scale(1); }
 }
 
+@keyframes machine-node-reveal {
+  0%, 35% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes machine-node-service-reveal {
+  0%, 35% { visibility: hidden; }
+  36%, 100% { visibility: visible; }
+}
+
+.machine-node-reveal {
+  animation: machine-node-reveal 360ms ease-out both;
+}
+
+.machine-node-service-reveal {
+  animation: machine-node-service-reveal 360ms ease-out both;
+}
+
 .trust-body {
   animation: trust-gravity-settle 480ms cubic-bezier(0.22, 1, 0.36, 1);
 }
