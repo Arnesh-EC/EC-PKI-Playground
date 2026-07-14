@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest"
 import { CONNECTION_HEALTH, CONNECTION_PORT, EDGE_TYPE } from "@/constants/topology"
 import {
   CONNECTION_PORT_GUIDANCE,
+  canConnect,
   connectionGuidance,
   connectionHealthForOperation,
   connectionPorts,
+  isConnectable,
   lintTopologyRelationships,
 } from "@/lib/topology"
 import type { Edge, Node } from "@xyflow/react"
@@ -41,6 +43,21 @@ function relationship(
 }
 
 describe("connection capability guidance", () => {
+  it("keeps configured staged nodes connectable before deployment", () => {
+    const root = machine("root", "CA01", "certificateAuthority", {
+      caType: "Root",
+    })
+    const issuing = machine("issuing", "CA02", "certificateAuthority", {
+      caType: "Issuing",
+    })
+
+    expect(isConnectable(root.data)).toBe(true)
+    expect(isConnectable(issuing.data)).toBe(true)
+    expect(canConnect(root.id, issuing.id, [root, issuing], [])).toEqual({
+      ok: true,
+    })
+  })
+
   it("maps deployable relationships to typed capability ports", () => {
     expect(connectionPorts(EDGE_TYPE.caHierarchy)).toEqual([
       CONNECTION_PORT.caParent,
