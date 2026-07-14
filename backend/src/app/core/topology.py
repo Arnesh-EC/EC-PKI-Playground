@@ -500,6 +500,20 @@ def validate_topology(topology: TopologyDocument) -> None:
                 )
             )
 
+    publication_by_web = {edge.target: edge for edge in valid_edges if edge.kind is TopologyEdgeKind.ca_publication}
+    for web in (node for node in nodes.values() if node.role is TopologyRole.web_server):
+        if web.config.get("enableOcsp", "Enabled") != "Disabled" and web.id not in publication_by_web:
+            diagnostics.append(
+                TopologyDiagnostic(
+                    code="ocsp-template-grant-missing",
+                    message=(
+                        f"{web.name} has OCSP enabled, but no issuing CA grants "
+                        "its enrollment templates."
+                    ),
+                    node_ids=[web.id],
+                )
+            )
+
     dns_ids: set[str] = set()
     dns_keys: dict[tuple[DnsRecordKind, str, str, str], DnsRecordResource] = {}
     valid_dns: list[DnsRecordResource] = []
@@ -585,8 +599,8 @@ def validate_topology(topology: TopologyDocument) -> None:
                 TopologyDiagnostic(
                     code="dns-cname-target-missing-a",
                     message=(
-                        f"CNAME '{record.name}.{record.zone}' targets {nodes[record.subject].name}, "
-                        "but that target has no authoritative A resource."
+                        f"PKI CNAME '{record.name}.{record.zone}' is planned, but its target "
+                        f"{nodes[record.subject].name} has no authoritative A record."
                     ),
                     node_ids=[record.server, record.subject],
                 )

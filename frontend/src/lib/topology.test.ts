@@ -6,7 +6,39 @@ import {
   connectionGuidance,
   connectionHealthForOperation,
   connectionPorts,
+  lintTopologyRelationships,
 } from "@/lib/topology"
+import type { Edge, Node } from "@xyflow/react"
+import type { MachineData } from "@/store/topology"
+
+function machine(
+  id: string,
+  name: string,
+  typeId: string,
+  config: Record<string, string> = {},
+): Node<MachineData> {
+  return {
+    id,
+    position: { x: 0, y: 0 },
+    data: {
+      name,
+      typeId,
+      config,
+      lifecycle: "staged",
+      poweredOn: false,
+    },
+  }
+}
+
+function relationship(
+  id: string,
+  source: string,
+  target: string,
+  edgeType: string,
+  health = "planned",
+): Edge {
+  return { id, source, target, data: { edgeType, health } }
+}
 
 describe("connection capability guidance", () => {
   it("maps deployable relationships to typed capability ports", () => {
@@ -55,5 +87,61 @@ describe("connection capability guidance", () => {
     expect(connectionHealthForOperation("done")).toBe(CONNECTION_HEALTH.verified)
     expect(connectionHealthForOperation("cancelled")).toBe(CONNECTION_HEALTH.degraded)
     expect(connectionHealthForOperation("error")).toBe(CONNECTION_HEALTH.broken)
+  })
+})
+
+describe("topology relationship linter", () => {
+  const nodes = [
+    machine("dc", "DC01", "domainController"),
+    machine("root", "CA01", "certificateAuthority", { caType: "Root" }),
+    machine("issuing", "CA02", "certificateAuthority", { caType: "Issuing" }),
+    machine("web", "SRV1", "webServer", { enableOcsp: "Enabled" }),
+  ]
+
+  it("reports missing domain, publication, and OCSP grant relationships", () => {
+    const diagnostics = lintTopologyRelationships(nodes, [
+      relationship("parent", "root", "issuing", EDGE_TYPE.caHierarchy),
+    ])
+
+    expect(diagnostics.map((item) => item.message)).toEqual([
+      "CA02 has a parent but is not inside an AD domain.",
+      "CA02 publishes HTTP CDP/AIA, but no web host is connected.",
+      "SRV1 has OCSP enabled, but no issuing CA grants its enrollment templates.",
+    ])
+  })
+
+  it("reports a planned CNAME whose web target has no A record", () => {
+    const diagnostics = lintTopologyRelationships(nodes, [
+      relationship("parent", "root", "issuing", EDGE_TYPE.caHierarchy),
+      relationship("issuing-domain", "issuing", "dc", EDGE_TYPE.domainJoin),
+      relationship("publication", "issuing", "web", EDGE_TYPE.webServerCert),
+    ])
+
+    expect(diagnostics.map((item) => item.message)).toContain(
+      "PKI CNAME is planned, but its target SRV1 has no A record.",
+    )
+  })
+
+  it("reports a failed probe revocation path", () => {
+    const diagnostics = lintTopologyRelationships(nodes, [
+      relationship("parent", "root", "issuing", EDGE_TYPE.caHierarchy),
+      relationship("issuing-domain", "issuing", "dc", EDGE_TYPE.domainJoin),
+      relationship("web-domain", "web", "dc", EDGE_TYPE.domainJoin),
+      relationship(
+        "publication",
+        "issuing",
+        "web",
+        EDGE_TYPE.webServerCert,
+        CONNECTION_HEALTH.broken,
+      ),
+    ])
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "probe-ocsp-path-unverified",
+        severity: "error",
+        message: "SRV1 can enroll its probe, but no verified OCSP path reaches its certificate.",
+      }),
+    )
   })
 })

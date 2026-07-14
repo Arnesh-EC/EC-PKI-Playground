@@ -222,6 +222,118 @@ export function connectionHealthForOperation(status: string): ConnectionHealth {
   }
 }
 
+export interface TopologyGuidanceItem {
+  code: string
+  message: string
+  severity: "warning" | "error"
+  nodeIds: string[]
+  edgeIds: string[]
+}
+
+/** Actionable relationship guidance available before a backend dry run. */
+export function lintTopologyRelationships(
+  nodes: Node<MachineData>[],
+  edges: Edge[],
+): TopologyGuidanceItem[] {
+  const diagnostics: TopologyGuidanceItem[] = []
+  const memberships = new Map(
+    edges
+      .filter((edge) => edge.data?.edgeType === EDGE_TYPE.domainJoin)
+      .map((edge) => [edge.source, edge]),
+  )
+  const parents = new Map(
+    edges
+      .filter((edge) => edge.data?.edgeType === EDGE_TYPE.caHierarchy)
+      .map((edge) => [edge.target, edge]),
+  )
+  const publications = edges.filter(
+    (edge) => edge.data?.edgeType === EDGE_TYPE.webServerCert,
+  )
+
+  const issuingCas = nodes.filter(
+    (node) =>
+      isConnectable(node.data) &&
+      node.data.typeId === "certificateAuthority" &&
+      node.data.config?.caType === "Issuing",
+  )
+  for (const issuing of issuingCas) {
+    const parent = parents.get(issuing.id)
+    if (!parent) {
+      diagnostics.push({
+        code: "missing-ca-parent",
+        message: `${issuing.data.name} is an issuing CA but has no root CA parent.`,
+        severity: "warning",
+        nodeIds: [issuing.id],
+        edgeIds: [],
+      })
+    } else if (!memberships.has(issuing.id)) {
+      diagnostics.push({
+        code: "issuing-ca-outside-domain",
+        message: `${issuing.data.name} has a parent but is not inside an AD domain.`,
+        severity: "warning",
+        nodeIds: [issuing.id, parent.source],
+        edgeIds: [parent.id],
+      })
+    }
+
+    if (!publications.some((edge) => edge.source === issuing.id)) {
+      diagnostics.push({
+        code: "missing-publication-host",
+        message: `${issuing.data.name} publishes HTTP CDP/AIA, but no web host is connected.`,
+        severity: "warning",
+        nodeIds: [issuing.id],
+        edgeIds: [],
+      })
+    }
+  }
+
+  const webHosts = nodes.filter(
+    (node) => isConnectable(node.data) && node.data.typeId === "webServer",
+  )
+  for (const web of webHosts) {
+    const publication = publications.find((edge) => edge.target === web.id)
+    const ocspEnabled = web.data.config?.enableOcsp !== "Disabled"
+    if (ocspEnabled && !publication) {
+      diagnostics.push({
+        code: "ocsp-template-grant-missing",
+        message: `${web.data.name} has OCSP enabled, but no issuing CA grants its enrollment templates.`,
+        severity: "warning",
+        nodeIds: [web.id],
+        edgeIds: [],
+      })
+      continue
+    }
+    if (!publication) continue
+
+    const health = publication.data?.health as ConnectionHealth | undefined
+    if (
+      health === CONNECTION_HEALTH.degraded ||
+      health === CONNECTION_HEALTH.broken
+    ) {
+      diagnostics.push({
+        code: "probe-ocsp-path-unverified",
+        message: `${web.data.name} can enroll its probe, but no verified OCSP path reaches its certificate.`,
+        severity: health === CONNECTION_HEALTH.broken ? "error" : "warning",
+        nodeIds: [publication.source, web.id],
+        edgeIds: [publication.id],
+      })
+    }
+
+    const issuingMembership = memberships.get(publication.source)
+    if (issuingMembership && !memberships.has(web.id)) {
+      diagnostics.push({
+        code: "pki-cname-target-missing-a",
+        message: `PKI CNAME is planned, but its target ${web.data.name} has no A record.`,
+        severity: "warning",
+        nodeIds: [issuingMembership.target, web.id],
+        edgeIds: [publication.id],
+      })
+    }
+  }
+
+  return diagnostics
+}
+
 /** Operator-facing meaning of a connection before it is deployed. */
 export function connectionGuidance(
   type: EdgeType,

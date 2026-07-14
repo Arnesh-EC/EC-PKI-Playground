@@ -93,7 +93,24 @@ def test_missing_relationships_are_reported_together():
         "missing-ca-parent",
         "issuing-ca-outside-domain",
         "missing-publication-host",
+        "ocsp-template-grant-missing",
     }
+
+
+def test_ocsp_host_without_an_issuing_ca_grant_is_actionable():
+    topology = _full_topology()
+    topology.edges = [edge for edge in topology.edges if edge.id != "publication"]
+
+    with pytest.raises(TopologyValidationError) as caught:
+        validate_topology(topology)
+
+    diagnostic = next(
+        item for item in caught.value.diagnostics
+        if item.code == "ocsp-template-grant-missing"
+    )
+    assert diagnostic.message == (
+        "SRV1 has OCSP enabled, but no issuing CA grants its enrollment templates."
+    )
 
 
 def test_root_domain_membership_is_rejected():
@@ -150,7 +167,14 @@ def test_cname_requires_an_authoritative_a_resource_for_its_target():
     with pytest.raises(TopologyValidationError) as caught:
         validate_topology(topology)
 
-    assert "dns-cname-target-missing-a" in _codes(caught.value)
+    diagnostic = next(
+        item for item in caught.value.diagnostics
+        if item.code == "dns-cname-target-missing-a"
+    )
+    assert diagnostic.message == (
+        "PKI CNAME 'pki.encon.pki' is planned, but its target SRV1 "
+        "has no authoritative A record."
+    )
 
 
 def test_invalid_reverse_zone_and_duplicate_record_are_reported():
