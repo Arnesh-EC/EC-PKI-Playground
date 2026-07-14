@@ -284,8 +284,10 @@ Replace tiny unlabeled handles with discoverable sockets that appear on focus:
 - amber shield socket: CA issuance;
 - green document socket: CDP/AIA publication;
 - violet pulse socket: OCSP;
-- blue boundary socket: domain membership/DNS;
 - white certificate socket: enrollment.
+
+Domain membership has no node socket: joining and leaving are represented only
+by moving a machine into or out of the living domain bubble.
 
 Dragging from a socket highlights only compatible destinations and previews the
 edge label, required operations, and anything still missing.
