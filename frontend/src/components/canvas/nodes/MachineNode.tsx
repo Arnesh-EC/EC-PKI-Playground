@@ -157,6 +157,9 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
       className={cn(
         "overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm select-none",
         "transition-shadow",
+        tier === "root" && "trust-body trust-body-root",
+        tier === "intermediate" && "trust-body trust-body-intermediate",
+        tier === "issuing" && "trust-body trust-body-issuing",
         selected && "ring-2 ring-primary shadow-md",
         data.lifecycle === LIFECYCLE.draft && "border-amber-500/40",
         data.lifecycle === LIFECYCLE.staged && "border-sky-500/40 border-dashed opacity-80",

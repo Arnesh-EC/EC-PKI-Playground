@@ -164,6 +164,35 @@
   60% { transform: translate(-50%, -50%) scale(1.008); }
 }
 
+@keyframes trust-gravity-settle {
+  0% { transform: translateY(-18px) scale(0.96); }
+  60% { transform: translateY(4px) scale(1.015); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+.trust-body {
+  animation: trust-gravity-settle 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.trust-body-root {
+  border-color: rgb(245 158 11 / 72%);
+  box-shadow:
+    0 0 0 5px rgb(245 158 11 / 8%),
+    0 0 30px 8px rgb(245 158 11 / 22%);
+}
+
+.trust-body-intermediate {
+  box-shadow:
+    0 0 0 3px rgb(245 158 11 / 7%),
+    0 0 22px 5px rgb(245 158 11 / 17%);
+}
+
+.trust-body-issuing {
+  box-shadow:
+    0 0 0 2px rgb(245 158 11 / 6%),
+    0 0 16px 3px rgb(245 158 11 / 13%);
+}
+
 .domain-region-empty {
   animation: domain-breathe 4.8s ease-in-out infinite;
 }
@@ -189,7 +218,8 @@
   .domain-region-empty,
   .domain-member-well,
   .domain-region-accepting,
-  .domain-region-rejecting {
+  .domain-region-rejecting,
+  .trust-body {
     animation: none;
   }
 }
