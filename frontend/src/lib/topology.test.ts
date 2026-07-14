@@ -15,6 +15,7 @@ import {
   connectionHealthForOperation,
   connectionPorts,
   domainJoinBlockReason,
+  domainJoinEdge,
   domainJoinOperations,
   domainRegionSummary,
   isConnectable,
@@ -285,7 +286,7 @@ describe("service socket compatibility", () => {
     ).ok).toBe(false)
   })
 
-  it("exposes all five discoverable sockets on their supported roles", () => {
+  it("exposes only non-spatial service sockets on their supported roles", () => {
     const root = machine("root", "CA01", "certificateAuthority", { caType: "Root" })
     const issuing = machine("issuing", "CA02", "certificateAuthority", { caType: "Issuing" })
     const web = machine("web", "SRV1", "webServer")
@@ -297,29 +298,23 @@ describe("service socket compatibility", () => {
       "ocsp:source",
       "enrollment:source",
     ])
-    expect(serviceSocketsForNode(issuing, [])).toContainEqual({
-      socket: SERVICE_SOCKET.domain,
-      type: "source",
-    })
+    expect(serviceSocketsForNode(issuing, [])).not.toContainEqual(
+      expect.objectContaining({ socket: "domain" }),
+    )
     expect(serviceSocketsForNode(web, [])).toContainEqual({
       socket: SERVICE_SOCKET.ocsp,
       type: "target",
     })
-    expect(serviceSocketsForNode(dc, [])).toEqual([{
-      socket: SERVICE_SOCKET.domain,
-      type: "target",
-    }])
-  })
-
-  it("allows a blue domain socket to stage eligible membership", () => {
-    const dc = machine("dc", "DC01", "domainController")
-    const web = machine("web", "SRV1", "webServer")
-
-    expect(canConnectServiceSockets(
-      socketConnection("web", "dc", SERVICE_SOCKET.domain),
-      [dc, web],
-      [],
-    )).toEqual({ ok: true })
+    expect(serviceSocketsForNode(web, [])).not.toContainEqual(
+      expect.objectContaining({ socket: "domain" }),
+    )
+    expect(serviceSocketsForNode(dc, [])).toEqual([])
+    expect(domainJoinEdge(web.id, dc.id)).toMatchObject({
+      source: web.id,
+      target: dc.id,
+      hidden: true,
+      data: { edgeType: EDGE_TYPE.domainJoin },
+    })
   })
 
   it("resists second parents and hierarchy cycles during the gesture", () => {

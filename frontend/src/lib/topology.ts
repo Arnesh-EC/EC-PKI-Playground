@@ -198,11 +198,6 @@ export const SERVICE_SOCKET_GUIDANCE: Record<ServiceSocket, ServiceSocketGuidanc
     intent: "Attach an Online Responder path",
     operation: "webServerCert · configure, enroll, and verify OCSP",
   },
-  [SERVICE_SOCKET.domain]: {
-    label: "Domain membership / DNS",
-    intent: "Join Active Directory and use its DNS resolver",
-    operation: "domainJoin · set DNS, join, reboot, and verify",
-  },
   [SERVICE_SOCKET.enrollment]: {
     label: "Certificate enrollment",
     intent: "Enroll and validate a workload certificate",
@@ -276,12 +271,8 @@ export function serviceSocketEdgeType(
         target.data.typeId === "webServer"
         ? EDGE_TYPE.webServerCert
         : null
-    case SERVICE_SOCKET.domain:
-      return source.data.typeId !== "domainController" &&
-        target.data.typeId === "domainController"
-        ? EDGE_TYPE.domainJoin
-        : null
   }
+  return null
 }
 
 export interface NodeServiceSocket {
@@ -295,9 +286,7 @@ export function serviceSocketsForNode(
   edges: Edge[],
 ): NodeServiceSocket[] {
   if (!isConnectable(node.data)) return []
-  if (node.data.typeId === "domainController") {
-    return [{ socket: SERVICE_SOCKET.domain, type: "target" }]
-  }
+  if (node.data.typeId === "domainController") return []
   if (node.data.typeId === "certificateAuthority") {
     const root = node.data.config?.caType === "Root" || caTier(node.id, edges) === "root"
     return [
@@ -306,7 +295,6 @@ export function serviceSocketsForNode(
       { socket: SERVICE_SOCKET.publication, type: "source" },
       { socket: SERVICE_SOCKET.ocsp, type: "source" },
       { socket: SERVICE_SOCKET.enrollment, type: "source" },
-      ...(!root ? [{ socket: SERVICE_SOCKET.domain, type: "source" } as const] : []),
     ]
   }
   if (node.data.typeId === "webServer") {
@@ -314,10 +302,9 @@ export function serviceSocketsForNode(
       { socket: SERVICE_SOCKET.publication, type: "target" },
       { socket: SERVICE_SOCKET.ocsp, type: "target" },
       { socket: SERVICE_SOCKET.enrollment, type: "target" },
-      { socket: SERVICE_SOCKET.domain, type: "source" },
     ]
   }
-  return [{ socket: SERVICE_SOCKET.domain, type: "source" }]
+  return []
 }
 
 export interface ConnectionGuidance {
@@ -1027,7 +1014,7 @@ export function domainJoinEdge(source: string, target: string, staged = false): 
     source,
     target,
     type: "capability",
-    hidden: false,
+    hidden: true,
     data: {
       edgeType: EDGE_TYPE.domainJoin,
       ports: connectionPorts(EDGE_TYPE.domainJoin),

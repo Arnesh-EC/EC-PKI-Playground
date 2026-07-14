@@ -6,7 +6,6 @@ import {
   Clock,
   FileText,
   Loader2,
-  Network,
   Radio,
   ShieldCheck,
   type LucideIcon,
@@ -59,11 +58,6 @@ const SOCKET_APPEARANCE: Record<
     dotClassName: "!bg-violet-500",
     iconClassName: "text-violet-500",
   },
-  [SERVICE_SOCKET.domain]: {
-    icon: Network,
-    dotClassName: "!bg-sky-500",
-    iconClassName: "text-sky-500",
-  },
   [SERVICE_SOCKET.enrollment]: {
     icon: BadgeCheck,
     dotClassName: "!bg-slate-100",
@@ -84,21 +78,6 @@ function socketPlacement(socket: ServiceSocket, type: "source" | "target") {
           position: Position.Left,
           handleStyle: { top: "42%" },
           labelStyle: { left: 9, top: "42%", transform: "translateY(-50%)" },
-          labelClassName: "justify-start",
-        }
-  }
-  if (socket === SERVICE_SOCKET.domain) {
-    return type === "source"
-      ? {
-          position: Position.Bottom,
-          handleStyle: { left: "24%" },
-          labelStyle: { bottom: 8, left: "24%", transform: "translateX(-50%)" },
-          labelClassName: "justify-center",
-        }
-      : {
-          position: Position.Left,
-          handleStyle: { top: "24%" },
-          labelStyle: { left: 9, top: "24%", transform: "translateY(-50%)" },
           labelClassName: "justify-start",
         }
   }

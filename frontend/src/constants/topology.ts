@@ -43,7 +43,6 @@ export const SERVICE_SOCKET = {
   issuance: "issuance",
   publication: "publication",
   ocsp: "ocsp",
-  domain: "domain",
   enrollment: "enrollment",
 } as const
 
