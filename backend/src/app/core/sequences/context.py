@@ -111,6 +111,20 @@ def _find_issuing_ca(db, sibling_vm_name: str) -> NodeContext | None:
     return None
 
 
+def _find_root_ca(db, sibling_vm_name: str) -> NodeContext | None:
+    """The standalone root CA sharing the operation's guest namespace."""
+
+    query = {"agent.templateId": "certificateAuthority", "status": {"$ne": "deleted"}}
+    prefix = _namespace_prefix(sibling_vm_name)
+    if prefix is not None:
+        query["vmName"] = {"$regex": f"^{prefix}"}
+    for doc in db["vm_registry"].find(query):
+        node = _resolve_node(db, doc["appName"])
+        if node.template_config.get("caType") == "Root":
+            return node
+    return None
+
+
 def dns_records_for_context(topology) -> tuple[DnsRecordContext, ...]:
     """Convert topology Pydantic resources to the sequence's pure dataclass."""
 
@@ -165,8 +179,15 @@ def build_run_context(db, op, all_ops, topology=None) -> RunContext:
     # caConnect: the secondary is the parent (root) CA — also expose it as
     # `root`. The issuing CA additionally publishes through the forest's web
     # host, resolved by namespace.
-    if secondary_ctx is not None and secondary_ctx.template_id == "certificateAuthority":
+    if (
+        secondary_ctx is not None
+        and secondary_ctx.template_config.get("caType") == "Root"
+    ):
         nodes[ROOT] = secondary_ctx
+    else:
+        root_ctx = _find_root_ca(db, nodes[PRIMARY].vm_name)
+        if root_ctx is not None:
+            nodes[ROOT] = root_ctx
     web_ctx = _find_by_template(db, nodes[PRIMARY].vm_name, "webServer")
     if web_ctx is not None:
         nodes[WEB] = web_ctx

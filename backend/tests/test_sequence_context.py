@@ -27,6 +27,7 @@ def _node(node_id: str, template_id: str, config=None) -> NodeContext:
 
 def test_web_publication_context_targets_the_web_host(monkeypatch):
     ca = _node("ca02", "certificateAuthority", {"caType": "Issuing"})
+    root = _node("ca01", "certificateAuthority", {"caType": "Root"})
     web = _node("srv1", "webServer")
     dc = _node(
         "dc01",
@@ -46,6 +47,9 @@ def test_web_publication_context_targets_the_web_host(monkeypatch):
     monkeypatch.setattr(
         sequence_context, "_find_issuing_ca", lambda db, name: ca
     )
+    monkeypatch.setattr(
+        sequence_context, "_find_root_ca", lambda db, name: root
+    )
     op = SimpleNamespace(
         kind=SimpleNamespace(value="webServerCert"),
         target="ca02",
@@ -56,3 +60,5 @@ def test_web_publication_context_targets_the_web_host(monkeypatch):
 
     assert resolved.node("primary").node_id == "srv1"
     assert resolved.node("secondary").node_id == "ca02"
+    assert resolved.node("ca").node_id == "ca02"
+    assert resolved.node("root").node_id == "ca01"
