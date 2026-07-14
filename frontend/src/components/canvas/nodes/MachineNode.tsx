@@ -1,12 +1,12 @@
 import {
   AlertTriangle,
   BadgeCheck,
+  CheckCircle2,
   Clock,
   FileText,
   Loader2,
   Network,
   Radio,
-  RefreshCw,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react"
@@ -14,7 +14,6 @@ import { Handle, Position, useEdges, useNodes } from "@xyflow/react"
 import type { NodeProps, Node } from "@xyflow/react"
 import { cn } from "@/lib/utils"
 import { TEMPLATE_BY_ID } from "@/constants/templates"
-import type { TemplateDef } from "@/constants/templates"
 import { EDGE_TYPE, LIFECYCLE, SERVICE_SOCKET } from "@/constants/topology"
 import type { Lifecycle, ServiceSocket } from "@/constants/topology"
 import {
@@ -28,8 +27,8 @@ import {
   isDeployed,
   serviceSocketHandleId,
   serviceSocketsForNode,
-  truncateLabel,
 } from "@/lib/topology"
+import { findLabEvidence, nodeHealthWarning } from "@/lib/labEvidence"
 import { useAgentConnected } from "@/hooks/useAgentConnected"
 import { useTopologyStore } from "@/store/topology"
 import { useConnectionGestureStore } from "@/store/connectionGesture"
@@ -38,6 +37,7 @@ import { Badge } from "@/components/ui/badge"
 import { ProgressBar } from "./ProgressBar"
 
 const MACHINE_NODE_WIDTH = 192
+const MACHINE_NODE_HEIGHT = 164
 
 const SOCKET_APPEARANCE: Record<
   ServiceSocket,
@@ -124,7 +124,7 @@ function LifecycleBadge({ lifecycle }: { lifecycle: Lifecycle }) {
         className="flex items-center gap-1 text-[10px] text-emerald-500 border-emerald-500/30"
       >
         <Loader2 className="h-2.5 w-2.5 animate-spin" />
-        awaiting orchestrator…
+        provisioning
       </Badge>
     )
   if (lifecycle === LIFECYCLE.failed)
@@ -147,7 +147,25 @@ function LifecycleBadge({ lifecycle }: { lifecycle: Lifecycle }) {
         removing…
       </Badge>
     )
-  return null
+  if (lifecycle === LIFECYCLE.drifted)
+    return (
+      <Badge
+        variant="secondary"
+        className="flex items-center gap-1 text-[10px] text-orange-500 border-orange-500/30"
+      >
+        <AlertTriangle className="h-2.5 w-2.5" />
+        drifted
+      </Badge>
+    )
+  return (
+    <Badge
+      variant="secondary"
+      className="flex items-center gap-1 text-[10px] text-emerald-500 border-emerald-500/30"
+    >
+      <CheckCircle2 className="h-2.5 w-2.5" />
+      deployed
+    </Badge>
+  )
 }
 
 /**
@@ -172,21 +190,46 @@ function AgentStatusDot({ vmId }: { vmId: string }) {
   )
 }
 
-/** Amber badge shown on a deployed node whose config has since been edited — deploy skips these in v1, so this is purely informational. */
-function DriftBadge({ data, def }: { data: MachineData; def?: TemplateDef }) {
-  const fields = driftedFields(data)
-  if (fields.length === 0) return null
-  const labels = fields.map((key) => def?.configFields?.find((f) => f.key === key)?.label ?? key)
-  return (
-    <Badge
-      variant="secondary"
-      className="flex items-center gap-1 text-[10px] text-orange-500 border-orange-500/30 max-w-full"
-      title={`Config changed since last deploy: ${labels.join(", ")}`}
-    >
-      <RefreshCw className="h-2.5 w-2.5 shrink-0" />
-      <span className="truncate">drifted</span>
-    </Badge>
-  )
+interface NodeFact {
+  label: string
+  value: string
+}
+
+function compactFacts({
+  data,
+  tier,
+  depth,
+  domain,
+  memberCount,
+}: {
+  data: MachineData
+  tier: ReturnType<typeof caTier> | null
+  depth: number | null
+  domain: string | null
+  memberCount: number | null
+}): [NodeFact, NodeFact] {
+  if (data.typeId === "domainController") {
+    return [
+      { label: "Forest", value: data.config?.forestLevel ?? "Pending" },
+      { label: "Members", value: String(memberCount ?? 0) },
+    ]
+  }
+  if (data.typeId === "certificateAuthority") {
+    if (tier === "root") {
+      return [
+        { label: "Trust tier", value: "Root" },
+        { label: "Isolation", value: "Air-gapped" },
+      ]
+    }
+    return [
+      { label: "Trust tier", value: tier === "standalone" ? "Standalone" : `T${depth ?? 1} ${tier ?? "CA"}` },
+      { label: "Domain", value: domain ?? "Not joined" },
+    ]
+  }
+  return [
+    { label: "Endpoint", value: isDeployed(data) && data.ip ? data.ip : "Pending" },
+    { label: "Domain", value: domain ?? "Not joined" },
+  ]
 }
 
 export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>) {
@@ -209,6 +252,18 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
   const memberCount = showDerived && data.typeId === "domainController"
     ? edges.filter((e) => e.target === id && e.data?.edgeType === EDGE_TYPE.domainJoin).length
     : null
+  const evidence = findLabEvidence(nodes)
+  const evidenceWarning = nodeHealthWarning(
+    { id, data, position: { x: 0, y: 0 } },
+    evidence,
+  )
+  const driftFields = driftedFields(data)
+  const warning = evidenceWarning ??
+    (data.lifecycle === LIFECYCLE.failed ? data.phase ?? "Deployment failed" : null) ??
+    (driftFields.length > 0 ? "Configuration changed since deploy" : null)
+  const facts = compactFacts({ data, tier, depth, domain, memberCount })
+  const activePhase = data.lifecycle === LIFECYCLE.deploying ||
+    data.lifecycle === LIFECYCLE.destroying
 
   const Icon = def?.icon ?? AlertTriangle
   const socketSpecs = serviceSocketsForNode(
@@ -234,6 +289,9 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         width: MACHINE_NODE_WIDTH,
         minWidth: MACHINE_NODE_WIDTH,
         maxWidth: MACHINE_NODE_WIDTH,
+        height: MACHINE_NODE_HEIGHT,
+        minHeight: MACHINE_NODE_HEIGHT,
+        maxHeight: MACHINE_NODE_HEIGHT,
       }}
       className={cn(
         "relative overflow-visible rounded-xl border bg-card text-card-foreground shadow-sm select-none",
@@ -309,89 +367,71 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
       {/* Header */}
       <div
         className={cn(
-          "flex items-center gap-2 px-3 py-2 rounded-t-xl border-b",
+          "flex h-11 items-center gap-2 rounded-t-xl border-b px-3 py-2",
           "bg-muted/40",
         )}
       >
         <Icon className={cn("h-4 w-4 shrink-0", def?.accent ?? "text-muted-foreground")} />
-        <span className="text-xs font-semibold truncate flex-1">{data.name}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-semibold">{data.name}</span>
+          <span className="block truncate text-[9px] text-muted-foreground">
+            {def?.label ?? data.typeId}
+          </span>
+        </span>
         {data.orchestratorVmId && <AgentStatusDot vmId={data.orchestratorVmId} />}
       </div>
 
       {/* Body */}
-      <div className="px-3 py-2 flex flex-col gap-1.5">
+      <div className="flex h-[120px] flex-col gap-2 px-3 py-2">
         <LifecycleBadge lifecycle={data.lifecycle} />
-        {data.lifecycle === LIFECYCLE.drifted && <DriftBadge data={data} def={def} />}
 
-        {/* Live progress while a job (deploy or teardown) runs on this node */}
-        {(data.lifecycle === LIFECYCLE.deploying ||
-          data.lifecycle === LIFECYCLE.destroying) && (
-          <>
-            {data.phase && (
+        <div className="h-7 min-w-0">
+          {activePhase ? (
+            <div className="group/phase relative min-w-0">
               <span
-                className="block min-w-0 max-w-full truncate text-[10px] text-muted-foreground"
-                title={data.phase}
+                className="block min-w-0 truncate text-[10px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 tabIndex={0}
+                aria-describedby={`phase-${id}`}
               >
-                {data.phase}
+                {data.phase ?? "Starting"}
               </span>
-            )}
-            <ProgressBar pct={data.progress ?? 0} />
-          </>
-        )}
-
-        {/* Derived chips */}
-        {tier === "root" && (
-          <Badge variant="outline" className="text-[10px] border-amber-500/50 text-amber-500">
-            CA: Root
-          </Badge>
-        )}
-        {tier === "intermediate" && (
-          <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-400">
-            CA: Intermediate · T{depth}
-          </Badge>
-        )}
-        {tier === "issuing" && (
-          <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-300">
-            CA: Issuing · T{depth}
-          </Badge>
-        )}
-        {domain && (
-          <Badge
-            variant="outline"
-            className="text-[10px] border-blue-500/40 text-blue-400 max-w-full"
-            title={`Domain: ${domain}`}
-          >
-            <span className="truncate">Domain: {truncateLabel(domain)}</span>
-          </Badge>
-        )}
-        {memberCount !== null && (
-          <Badge variant="outline" className="text-[10px] border-blue-500/40 text-blue-400">
-            {memberCount} {memberCount === 1 ? "member" : "members"}
-          </Badge>
-        )}
-
-        {/* Deploy-confirmed IP — the address you'd RDP to. Held back until the
-            node is a confirmed deployment (agent online): a `provisioning`
-            node already knows its pool IP, but showing it would imply the box
-            is reachable before the orchestrator has actually phoned home. An
-            offline root is presented air-gapped: its real management IP is
-            hidden on the node. */}
-        {tier === "root" ? (
-          <span className="text-[10px] text-amber-500">air-gapped</span>
-        ) : (
-          isDeployed(data) &&
-          data.ip && (
-            <span className="font-mono text-[10px] text-muted-foreground">
-              {data.ip}
+              <div
+                id={`phase-${id}`}
+                role="tooltip"
+                className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-64 rounded-md border bg-popover px-2 py-1.5 text-[10px] leading-snug text-popover-foreground shadow-lg group-hover/phase:block group-focus-within/phase:block"
+              >
+                {data.phase ?? "Starting"}
+              </div>
+              <ProgressBar pct={data.progress ?? 0} />
+            </div>
+          ) : warning ? (
+            <span
+              className="flex min-w-0 items-center gap-1 text-[10px] text-red-500"
+              title={warning}
+            >
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              <span className="truncate">{warning}</span>
             </span>
-          )
-        )}
+          ) : (
+            <span className="flex items-center gap-1 text-[10px] text-emerald-500">
+              <CheckCircle2 className="h-3 w-3 shrink-0" />
+              No active warning
+            </span>
+          )}
+        </div>
 
-        {/* Role label */}
-        <span className="text-[10px] text-muted-foreground">
-          {def?.label ?? data.typeId}
-        </span>
+        <dl className="grid grid-cols-2 gap-2 border-t pt-2">
+          {facts.map((fact) => (
+            <div key={fact.label} className="min-w-0">
+              <dt className="truncate text-[9px] uppercase tracking-wide text-muted-foreground">
+                {fact.label}
+              </dt>
+              <dd className="truncate text-[10px] font-medium" title={fact.value}>
+                {fact.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
       </div>
     </div>
   )
