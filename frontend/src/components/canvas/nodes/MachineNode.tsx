@@ -1,3 +1,4 @@
+import { Fragment } from "react"
 import {
   AlertTriangle,
   BadgeCheck,
@@ -41,49 +42,84 @@ const MACHINE_NODE_HEIGHT = 164
 
 const SOCKET_APPEARANCE: Record<
   ServiceSocket,
-  { icon: LucideIcon; className: string }
+  { icon: LucideIcon; dotClassName: string; iconClassName: string }
 > = {
   [SERVICE_SOCKET.issuance]: {
     icon: ShieldCheck,
-    className: "!border-amber-200 !bg-amber-500 text-stone-950",
+    dotClassName: "!bg-amber-500",
+    iconClassName: "text-amber-500",
   },
   [SERVICE_SOCKET.publication]: {
     icon: FileText,
-    className: "!border-emerald-200 !bg-emerald-500 text-emerald-950",
+    dotClassName: "!bg-emerald-500",
+    iconClassName: "text-emerald-500",
   },
   [SERVICE_SOCKET.ocsp]: {
     icon: Radio,
-    className: "!border-violet-200 !bg-violet-500 text-violet-950",
+    dotClassName: "!bg-violet-500",
+    iconClassName: "text-violet-500",
   },
   [SERVICE_SOCKET.domain]: {
     icon: Network,
-    className: "!border-sky-200 !bg-sky-500 text-sky-950",
+    dotClassName: "!bg-sky-500",
+    iconClassName: "text-sky-500",
   },
   [SERVICE_SOCKET.enrollment]: {
     icon: BadgeCheck,
-    className: "!border-slate-400 !bg-slate-100 text-slate-900",
+    dotClassName: "!bg-slate-100",
+    iconClassName: "text-slate-400",
   },
 }
 
 function socketPlacement(socket: ServiceSocket, type: "source" | "target") {
   if (socket === SERVICE_SOCKET.issuance) {
     return type === "source"
-      ? { position: Position.Bottom, style: { left: "52%" } }
-      : { position: Position.Top, style: { left: "52%" } }
+      ? {
+          position: Position.Bottom,
+          handleStyle: { left: "52%" },
+          labelStyle: { bottom: 8, left: "52%", transform: "translateX(-50%)" },
+          labelClassName: "justify-center",
+        }
+      : {
+          position: Position.Left,
+          handleStyle: { top: "42%" },
+          labelStyle: { left: 9, top: "42%", transform: "translateY(-50%)" },
+          labelClassName: "justify-start",
+        }
   }
   if (socket === SERVICE_SOCKET.domain) {
     return type === "source"
-      ? { position: Position.Bottom, style: { left: "24%" } }
-      : { position: Position.Top, style: { left: "24%" } }
+      ? {
+          position: Position.Bottom,
+          handleStyle: { left: "24%" },
+          labelStyle: { bottom: 8, left: "24%", transform: "translateX(-50%)" },
+          labelClassName: "justify-center",
+        }
+      : {
+          position: Position.Left,
+          handleStyle: { top: "24%" },
+          labelStyle: { left: 9, top: "24%", transform: "translateY(-50%)" },
+          labelClassName: "justify-start",
+        }
   }
   const top = socket === SERVICE_SOCKET.publication
-    ? "32%"
+    ? "42%"
     : socket === SERVICE_SOCKET.ocsp
-      ? "53%"
-      : "74%"
+      ? "60%"
+      : "78%"
   return type === "source"
-    ? { position: Position.Right, style: { top } }
-    : { position: Position.Left, style: { top } }
+    ? {
+        position: Position.Right,
+        handleStyle: { top },
+        labelStyle: { right: 9, top, transform: "translateY(-50%)" },
+        labelClassName: "flex-row-reverse justify-start text-right",
+      }
+    : {
+        position: Position.Left,
+        handleStyle: { top },
+        labelStyle: { left: 9, top, transform: "translateY(-50%)" },
+        labelClassName: "justify-start",
+      }
 }
 
 function LifecycleBadge({ lifecycle }: { lifecycle: Lifecycle }) {
@@ -294,7 +330,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         maxHeight: MACHINE_NODE_HEIGHT,
       }}
       className={cn(
-        "relative overflow-visible rounded-xl border bg-card text-card-foreground shadow-sm select-none",
+        "group/node relative overflow-visible rounded-xl border bg-card text-card-foreground shadow-sm select-none",
         "transition-shadow",
         tier === "root" && "trust-body trust-body-root",
         tier === "intermediate" && "trust-body trust-body-intermediate",
@@ -335,34 +371,48 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         const SocketIcon = appearance.icon
         const guidance = SERVICE_SOCKET_GUIDANCE[spec.socket]
         return (
-          <Handle
-            key={handleId}
-            id={handleId}
-            type={spec.type}
-            position={placement.position}
-            style={placement.style}
-            isConnectableStart={spec.type === "source"}
-            isConnectableEnd={spec.type === "target"}
-            title={`${guidance.label} · ${guidance.intent}`}
-            aria-label={`${guidance.label} socket: ${guidance.intent}`}
-            tabIndex={visible ? 0 : -1}
-            onMouseEnter={() => {
-              if (gesture && spec.type === "target") hoverTarget(id, handleId)
-            }}
-            onMouseLeave={() => {
-              if (gesture && spec.type === "target") hoverTarget()
-            }}
-            className={cn(
-              "service-socket !z-20 !flex !h-6 !w-6 !items-center !justify-center !rounded-md !border-2 !shadow-md",
-              "transition-all duration-150 focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring",
-              appearance.className,
-              visible
-                ? "!scale-100 !opacity-100"
-                : "pointer-events-none !scale-75 !opacity-0",
-            )}
-          >
-            <SocketIcon className="pointer-events-none h-3.5 w-3.5" />
-          </Handle>
+          <Fragment key={handleId}>
+            <Handle
+              id={handleId}
+              type={spec.type}
+              position={placement.position}
+              style={placement.handleStyle}
+              isConnectableStart={spec.type === "source"}
+              isConnectableEnd={spec.type === "target"}
+              title={`${guidance.label} · ${guidance.intent}`}
+              aria-label={`${guidance.label} socket: ${guidance.intent}`}
+              tabIndex={visible ? 0 : -1}
+              onMouseEnter={() => {
+                if (gesture && spec.type === "target") hoverTarget(id, handleId)
+              }}
+              onMouseLeave={() => {
+                if (gesture && spec.type === "target") hoverTarget()
+              }}
+              className={cn(
+                "service-socket !z-20 !h-3 !w-3 !rounded-full !border-0 !shadow-sm",
+                "transition-all duration-150 focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring",
+                appearance.dotClassName,
+                visible
+                  ? "!scale-100 !opacity-100"
+                  : "pointer-events-none !scale-75 !opacity-0",
+              )}
+            />
+            <span
+              aria-hidden="true"
+              style={placement.labelStyle}
+              className={cn(
+                "pointer-events-none absolute z-10 flex max-w-[168px] items-center gap-1 rounded bg-card/95 px-1 py-0.5",
+                "text-[9px] font-medium leading-none text-muted-foreground opacity-0 transition-opacity duration-150",
+                "group-hover/node:opacity-100 group-focus-within/node:opacity-100",
+                selected && "opacity-100",
+                gesture && visible && "opacity-100",
+                placement.labelClassName,
+              )}
+            >
+              <SocketIcon className={cn("h-3 w-3 shrink-0", appearance.iconClassName)} />
+              <span className="truncate">{guidance.label}</span>
+            </span>
+          </Fragment>
         )
       })}
 
