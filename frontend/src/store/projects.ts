@@ -207,7 +207,7 @@ export const useProjectsStore = create<ProjectsState>()(
         // snapshot it into the freshly-created project. Suppressed so the
         // build's per-node/edge churn doesn't autosave on every step.
         withSuppressedAutosave(() => {
-          buildPkiTemplateIntoStores()
+          buildPkiTemplateIntoStores(project.id)
         })
         get().saveActiveSnapshot()
       },

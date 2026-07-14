@@ -52,7 +52,12 @@ def test_validate_rejects_weak_dc_password():
 def test_validate_accepts_strong_dc_password():
     validate_template_config(
         "domainController",
-        {"vmName": "dc01", "template": "domainController", "domainAdminPassword": "Str0ng-Lab-Pass!"},
+        {
+            "vmName": "dc01",
+            "template": "domainController",
+            "netbiosName": "a1b2c3-ENCON",
+            "domainAdminPassword": "Str0ng-Lab-Pass!",
+        },
     )
 
 
@@ -71,7 +76,7 @@ def test_encrypt_then_decrypt_round_trips_the_password():
     assert stored["domainAdminPassword"] != "Str0ng-Lab-Pass!"
     assert set(stored["domainAdminPassword"]) == {"keyId", "nonce", "ciphertext"}
     # Non-secret fields pass through unchanged.
-    assert stored["domainName"] == "EncryptionConsulting.com"
+    assert stored["domainName"] == "encon.pki"
 
     recovered = decrypt_config_secrets("domainController", stored)
     assert recovered["domainAdminPassword"] == "Str0ng-Lab-Pass!"

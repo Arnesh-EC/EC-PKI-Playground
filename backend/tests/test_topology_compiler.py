@@ -108,13 +108,13 @@ def test_retry_reads_completed_dc_facts_from_topology():
     topology = _topology()
     dc = next(node for node in topology.nodes if node.id == "dc")
     dc.config = {
-        "domainName": "EncryptionConsulting.com",
-        "netbiosName": "ENCRYPTIONCONSU",
+        "domainName": "encon.pki",
+        "netbiosName": "ENCON",
     }
 
     assert _plan_domain_facts([], topology) == (
-        "EncryptionConsulting.com",
-        "ENCRYPTIONCONSU",
+        "encon.pki",
+        "ENCON",
     )
 
 

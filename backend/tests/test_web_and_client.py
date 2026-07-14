@@ -19,7 +19,7 @@ def _node(nid, vm, template, cfg=None, ip="192.168.1.1"):
 
 def _web_ctx():
     dc = _node("dc01", "guest-abc12-dc01", "domainController",
-               {"domainName": "EncryptionConsulting.com", "netbiosName": "ENCRYPTIONCONSU",
+               {"domainName": "encon.pki", "netbiosName": "ENCON",
                 "domainAdminPassword": "Str0ng-Lab-Pass!"})
     ca = _node("ca02", "guest-abc12-ca02", "certificateAuthority",
                {"caType": "Issuing", "commonName": "EncryptionConsulting Issuing CA"})
@@ -27,9 +27,9 @@ def _web_ctx():
                 {"certEnrollPath": "C:\\CertEnroll", "ocspRefreshMinutes": "15"})
     return RunContext(
         nodes={"primary": web, "secondary": ca, "ca": ca, "dc": dc, "web": web},
-        domain_name="EncryptionConsulting.com",
-        netbios="ENCRYPTIONCONSU",
-        pki_host="pki.EncryptionConsulting.com",
+        domain_name="encon.pki",
+        netbios="ENCON",
+        pki_host="pki.encon.pki",
     )
 
 
@@ -56,7 +56,7 @@ def test_ocsp_config_points_at_the_issuing_ca():
     cfg = next(s for s in op_sequence("webServerCert", ctx) if s.id == "ocsp-config")
     params = cfg.resolve_params(ctx)
     assert params["caConfig"] == (
-        "guest-abc12-ca02.EncryptionConsulting.com\\EncryptionConsulting Issuing CA"
+        "guest-abc12-ca02.encon.pki\\EncryptionConsulting Issuing CA"
     )
     assert params["refreshMinutes"] == "15"
     assert cfg.verify.command == "ocsp.verify"
@@ -68,12 +68,12 @@ def test_deferred_cname_targets_the_web_host_on_the_dc():
     assert cname.target == "dc"
     params = cname.resolve_params(ctx)
     assert params["name"] == "PKI"
-    assert params["target"] == "guest-abc12-srv1.EncryptionConsulting.com."
+    assert params["target"] == "guest-abc12-srv1.encon.pki."
 
 
 def _client_ctx(with_ca=True):
     dc = _node("dc01", "guest-abc12-dc01", "domainController",
-               {"domainName": "EncryptionConsulting.com", "netbiosName": "ENCRYPTIONCONSU",
+               {"domainName": "encon.pki", "netbiosName": "ENCON",
                 "domainAdminPassword": "Str0ng-Lab-Pass!"})
     win11 = _node("win11", "guest-abc12-win11", "client")
     nodes = {"primary": win11, "secondary": dc, "dc": dc}
@@ -82,8 +82,8 @@ def _client_ctx(with_ca=True):
                             {"caType": "Issuing"})
     return RunContext(
         nodes=nodes,
-        domain_name="EncryptionConsulting.com",
-        netbios="ENCRYPTIONCONSU",
+        domain_name="encon.pki",
+        netbios="ENCON",
     )
 
 

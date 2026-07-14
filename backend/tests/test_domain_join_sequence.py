@@ -28,15 +28,15 @@ def _ctx(primary_template="standalone"):
         ip="192.168.1.90",
         template_id="domainController",
         template_config={
-            "domainName": "EncryptionConsulting.com",
-            "netbiosName": "ENCRYPTIONCONSU",
+            "domainName": "encon.pki",
+            "netbiosName": "ENCON",
             "domainAdminPassword": "Str0ng-Lab-Pass!",
         },
     )
     return RunContext(
         nodes={"primary": member, "secondary": dc, "dc": dc},
-        domain_name="EncryptionConsulting.com",
-        netbios="ENCRYPTIONCONSU",
+        domain_name="encon.pki",
+        netbios="ENCON",
     )
 
 
@@ -63,8 +63,8 @@ def test_join_params_use_domain_netbios_admin_and_secret_password():
     ctx = _ctx()
     join = op_sequence("domainJoin", ctx)[1]
     params = join.resolve_params(ctx)
-    assert params["domainName"] == "EncryptionConsulting.com"
-    assert params["username"] == "ENCRYPTIONCONSU\\Administrator"
+    assert params["domainName"] == "encon.pki"
+    assert params["username"] == "ENCON\\Administrator"
     assert params["password"] == "Str0ng-Lab-Pass!"
     # The password param is flagged for redaction in progress/error frames.
     assert "password" in join.secret_keys
@@ -81,7 +81,7 @@ def test_web_server_target_gets_the_certenroll_share_half():
     assert steps[-1].command == "iis.setup_certenroll"
     params = steps[-1].resolve_params(_ctx(primary_template="webServer"))
     assert params["scope"] == "share"
-    assert params["netbiosName"] == "ENCRYPTIONCONSU"
+    assert params["netbiosName"] == "ENCON"
 
 
 def test_non_web_target_has_no_iis_step():

@@ -53,7 +53,7 @@ def _forest_mode(forest_level: str | None) -> str:
 
 
 def _ds_config_dn(domain: str) -> str:
-    """`CN=Configuration,DC=EncryptionConsulting,DC=com` from the domain — the
+    """`CN=Configuration,DC=encon,DC=pki` from the domain — the
     lab's DSConfigDN string baked into issued certs."""
     dc = ",".join(f"DC={part}" for part in domain.split(".") if part)
     return f"CN=Configuration,{dc}"

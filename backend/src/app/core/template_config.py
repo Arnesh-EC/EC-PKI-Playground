@@ -105,8 +105,8 @@ class FieldSpec:
 # stray config key on them is rejected.
 TEMPLATE_CONFIG_FIELDS: dict[str, dict[str, FieldSpec]] = {
     "domainController": {
-        "domainName": FieldSpec(_matches(_DNS), "EncryptionConsulting.com"),
-        "netbiosName": FieldSpec(_matches(_NETBIOS), "ENCRYPTIONCONSU"),
+        "domainName": FieldSpec(_matches(_DNS), "encon.pki"),
+        "netbiosName": FieldSpec(_matches(_NETBIOS), "ENCON"),
         "forestLevel": FieldSpec(
             _one_of(
                 "Windows Server 2016",
@@ -135,7 +135,7 @@ TEMPLATE_CONFIG_FIELDS: dict[str, dict[str, FieldSpec]] = {
         "validityYears": FieldSpec(_int_between(1, 50), "20"),
         # Issuing-CA CPS statement URL (hidden for Root in the UI); the Rust
         # ca.install drops it when caType=Root.
-        "cpsUrl": FieldSpec(_matches(_HTTP_URL), "http://pki.EncryptionConsulting.com/cps.txt"),
+        "cpsUrl": FieldSpec(_matches(_HTTP_URL), "http://pki.encon.pki/cps.txt"),
     },
     "webServer": {
         "certEnrollPath": FieldSpec(_matches(_CERT_PATH), "C:\\CertEnroll"),

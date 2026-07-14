@@ -22,8 +22,8 @@ def test_forest_mode_maps_levels():
 
 
 def test_ds_config_dn_from_domain():
-    assert _ds_config_dn("EncryptionConsulting.com") == (
-        "CN=Configuration,DC=EncryptionConsulting,DC=com"
+    assert _ds_config_dn("encon.pki") == (
+        "CN=Configuration,DC=encon,DC=pki"
     )
 
 
@@ -44,15 +44,15 @@ def test_dc_forest_params_map_config():
         node_id="dc", vm_name="guest-abc12-dc01", hostname="guest-abc12-dc01",
         agent_vm_id="v", ip="192.168.1.90", template_id="domainController",
         template_config={
-            "domainName": "EncryptionConsulting.com",
-            "netbiosName": "ENCRYPTIONCONSU",
+            "domainName": "encon.pki",
+            "netbiosName": "ENCON",
             "forestLevel": "Windows Server 2025",
             "domainAdminPassword": "Str0ng-Lab-Pass!",
         },
     )
     ctx = RunContext(nodes={"primary": node})
     p = provision_steps("domainController")[0].resolve_params(ctx)
-    assert p["domainName"] == "EncryptionConsulting.com"
+    assert p["domainName"] == "encon.pki"
     assert p["forestMode"] == "Win2025"
     assert p["safeModePassword"] == "Str0ng-Lab-Pass!"
     # dns.set_client points at the DC's own IP.
@@ -67,8 +67,8 @@ def _root_ctx():
     )
     return RunContext(
         nodes={"primary": node},
-        domain_name="EncryptionConsulting.com",
-        pki_host="pki.EncryptionConsulting.com",
+        domain_name="encon.pki",
+        pki_host="pki.encon.pki",
     )
 
 
@@ -90,7 +90,7 @@ def test_root_ca_tail_full_sequence():
 def test_root_ca_settings_include_dsconfigdn_and_periods():
     ctx = _root_ctx()
     settings = provision_steps("certificateAuthority", ca_type="Root")[1].resolve_params(ctx)
-    assert settings["dsConfigDn"] == "CN=Configuration,DC=EncryptionConsulting,DC=com"
+    assert settings["dsConfigDn"] == "CN=Configuration,DC=encon,DC=pki"
     assert settings["crlPeriodUnits"] == "52"
     assert settings["validityPeriodUnits"] == "10"
     assert settings["auditFilter"] == "127"
@@ -101,7 +101,7 @@ def test_root_ca_cdp_aia_use_pki_host_and_three_locations():
     p = provision_steps("certificateAuthority", ca_type="Root")[2].resolve_params(ctx)
     assert p["aiaUrls"].count("\n") == 2  # 3 AIA locations
     assert p["cdpUrls"].count("\n") == 2  # 3 CDP locations
-    assert "http://pki.EncryptionConsulting.com/CertEnroll/" in p["aiaUrls"]
+    assert "http://pki.encon.pki/CertEnroll/" in p["aiaUrls"]
 
 
 def test_root_crt_read_path_is_cn_derived():
@@ -123,7 +123,7 @@ def _full_lab_ctx():
         )
 
     dc = node("dc01", "guest-abc12-dc01", "domainController",
-              {"domainName": "EncryptionConsulting.com", "netbiosName": "ENCRYPTIONCONSU",
+              {"domainName": "encon.pki", "netbiosName": "ENCON",
                "domainAdminPassword": "Str0ng-Lab-Pass!"})
     return RunContext(
         nodes={
@@ -134,9 +134,9 @@ def _full_lab_ctx():
             "dc": dc,
             "web": node("srv1", "guest-abc12-srv1", "webServer"),
         },
-        domain_name="EncryptionConsulting.com",
-        netbios="ENCRYPTIONCONSU",
-        pki_host="pki.EncryptionConsulting.com",
+        domain_name="encon.pki",
+        netbios="ENCON",
+        pki_host="pki.encon.pki",
     )
 
 
@@ -162,7 +162,7 @@ def test_caconnect_issuing_install_is_credentialed_and_secret():
     install = next(s for s in op_sequence("caConnect", ctx) if s.id == "install-issuing")
     params = install.resolve_params(ctx)
     assert params["caType"] == "Issuing"
-    assert params["username"] == "ENCRYPTIONCONSU\\Administrator"
+    assert params["username"] == "ENCON\\Administrator"
     assert params["password"] == "Str0ng-Lab-Pass!"
     assert "password" in install.secret_keys
 
@@ -181,4 +181,4 @@ def test_caconnect_issuing_cdp_includes_unc_and_ocsp_when_web_present():
     cdp_aia = next(s for s in op_sequence("caConnect", ctx) if s.id == "issuing-cdp-aia")
     p = cdp_aia.resolve_params(ctx)
     assert "/ocsp" in p["aiaUrls"]  # 32: OCSP AIA entry
-    assert "\\\\guest-abc12-srv1.EncryptionConsulting.com\\CertEnroll\\" in p["cdpUrls"]
+    assert "\\\\guest-abc12-srv1.encon.pki\\CertEnroll\\" in p["cdpUrls"]

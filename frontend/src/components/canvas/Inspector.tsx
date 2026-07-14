@@ -21,11 +21,13 @@ import type { ConfigField } from "@/constants/templates"
 import { LIFECYCLE } from "@/constants/topology"
 import { ISO_DRIFT_FIELD, caTier, caDepth, domainMembership, driftedFields, isDeployed, isDrifted } from "@/lib/topology"
 import { PASSWORD_MASK, isPasswordValid, passwordRules } from "@/lib/passwordPolicy"
+import { projectNetbiosPrefix } from "@/lib/projectNaming"
 import { OP_KIND, OP_STATUS } from "@/lib/staging"
 import type { StagedOp } from "@/lib/staging"
 import { useTopologyStore } from "@/store/topology"
 import { opsReferencingNode, useStagingStore } from "@/store/staging"
 import { useAuthStore } from "@/store/auth"
+import { useProjectsStore } from "@/store/projects"
 import { CAPABILITIES } from "@/constants/auth"
 import { useCan } from "@/hooks/useCan"
 import { useIsOperator } from "@/hooks/useIsOperator"
@@ -91,6 +93,19 @@ function visibleValues(fields: ConfigField[], values: Record<string, string>) {
   )
 }
 
+function withFixedPrefixes(
+  fields: ConfigField[],
+  values: Record<string, string>,
+  fixedPrefixes: Record<string, string>,
+) {
+  return Object.fromEntries(
+    Object.entries(visibleValues(fields, values)).map(([key, value]) => [
+      key,
+      `${fixedPrefixes[key] ?? ""}${value}`,
+    ]),
+  )
+}
+
 /**
  * Inline config form rendered in the Inspector when a node is unconfigured
  * and its template defines configFields. Keyed by nodeId so state resets when
@@ -103,6 +118,7 @@ function ConfigForm({
   fields,
   vmName,
   initial,
+  fixedPrefixes = {},
   onChange,
   onSubmit,
   disabled = false,
@@ -110,14 +126,25 @@ function ConfigForm({
   fields: ConfigField[]
   vmName?: string
   initial?: Record<string, string>
+  fixedPrefixes?: Record<string, string>
   onChange?: (values: Record<string, string>) => void
   onSubmit: (values: Record<string, string>) => void
   disabled?: boolean
 }) {
-  const [values, setValues] = useState<Record<string, string>>(() => ({
-    ...Object.fromEntries(fields.map((f) => [f.key, f.default])),
-    ...(initial ?? {}),
-  }))
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      fields.map((field) => {
+        const prefix = fixedPrefixes[field.key] ?? ""
+        const initialValue = initial?.[field.key] ?? field.default
+        return [
+          field.key,
+          prefix && initialValue.startsWith(prefix)
+            ? initialValue.slice(prefix.length)
+            : initialValue,
+        ]
+      }),
+    ),
+  )
 
   function set(key: string, value: string) {
     const next = { ...values, [key]: value }
@@ -125,7 +152,7 @@ function ConfigForm({
     // Persist the draft on every edit (visible fields only, matching submit)
     // so it rides the node's `config` into localStorage/server and survives a
     // selection switch. Fires only on user input — never eagerly on mount.
-    onChange?.(visibleValues(fields, next))
+    onChange?.(withFixedPrefixes(fields, next, fixedPrefixes))
   }
 
   const visibleFields = fields.filter((f) => !isHiddenIn(f, values))
@@ -136,7 +163,7 @@ function ConfigForm({
   )
 
   function submit() {
-    onSubmit(visibleValues(fields, values))
+    onSubmit(withFixedPrefixes(fields, values, fixedPrefixes))
   }
 
   return (
@@ -177,12 +204,30 @@ function ConfigForm({
               </ul>
             </div>
           ) : field.type === "text" ? (
-            <Input
-              value={values[field.key]}
-              onChange={(e) => set(field.key, e.target.value)}
-              placeholder={field.placeholder}
-              className="h-7 text-xs"
-            />
+            <div className="flex min-w-0">
+              {fixedPrefixes[field.key] && (
+                <span
+                  className="flex h-7 shrink-0 items-center rounded-l-md border border-r-0 bg-muted/40 px-2 font-mono text-xs text-muted-foreground"
+                  title="Fixed project prefix"
+                >
+                  {fixedPrefixes[field.key]}
+                </span>
+              )}
+              <Input
+                value={values[field.key]}
+                onChange={(e) => set(field.key, e.target.value)}
+                placeholder={field.placeholder}
+                maxLength={
+                  field.key === "netbiosName"
+                    ? 15 - (fixedPrefixes[field.key]?.length ?? 0)
+                    : undefined
+                }
+                className={cn(
+                  "h-7 min-w-0 text-xs",
+                  fixedPrefixes[field.key] && "rounded-l-none",
+                )}
+              />
+            </div>
           ) : (
             <Select
               value={values[field.key]}
@@ -456,6 +501,7 @@ export function Inspector() {
   const store = useTopologyStore()
   const nodes = useTopologyStore((s) => s.nodes)
   const edges = useTopologyStore((s) => s.edges)
+  const activeProjectId = useProjectsStore((s) => s.activeProjectId)
 
   const [editingName, setEditingName] = useState(false)
   const [draftName, setDraftName] = useState("")
@@ -500,6 +546,7 @@ export function Inspector() {
       ? caDepth(nodeId, edges)
       : null
   const domain = domainMembership(nodeId, edges, nodes)
+  const netbiosPrefix = projectNetbiosPrefix(activeProjectId)
 
   function startRename() {
     setDraftName(data.name)
@@ -718,6 +765,11 @@ export function Inspector() {
                   fields={def!.configFields!}
                   vmName={data.name}
                   initial={data.config}
+                  fixedPrefixes={
+                    data.typeId === "domainController" && netbiosPrefix
+                      ? { netbiosName: netbiosPrefix }
+                      : undefined
+                  }
                   onChange={(config) => store.setNodeConfig(nodeId, config)}
                   onSubmit={handleConfigure}
                   disabled={deploying}

@@ -21,6 +21,7 @@
 import { DEFAULT_VIEWPORT, useTopologyStore } from "@/store/topology"
 import { useStagingStore } from "@/store/staging"
 import { domainLabel } from "@/lib/topology"
+import { projectNetbiosPrefix } from "@/lib/projectNaming"
 import type { DomainSyncChange } from "@/store/topology"
 
 /** Reads a `VITE_*` env var, falling back to `fallback` when unset/blank. */
@@ -36,13 +37,13 @@ function envDefault(key: string, fallback: string): string {
  * throwaway lab credential, meant to be changed for anything real.
  */
 const PKI = {
-  domainName: envDefault("VITE_PKI_DOMAIN_NAME", "EncryptionConsulting.com"),
-  netbiosName: envDefault("VITE_PKI_NETBIOS_NAME", "ENCRYPTIONCONSU"),
+  domainName: envDefault("VITE_PKI_DOMAIN_NAME", "encon.pki"),
+  netbiosName: envDefault("VITE_PKI_NETBIOS_NAME", "ENCON"),
   forestLevel: envDefault("VITE_PKI_FOREST_LEVEL", "Windows Server 2016"),
   domainAdminPassword: envDefault("VITE_PKI_DOMAIN_ADMIN_PASSWORD", "EcPkiLab#2026Key"),
   rootCaCn: envDefault("VITE_PKI_ROOT_CA_CN", "EC-Root-CA"),
   issuingCaCn: envDefault("VITE_PKI_ISSUING_CA_CN", "EC-Issuing-CA"),
-  cpsUrl: envDefault("VITE_PKI_CPS_URL", "http://pki.EncryptionConsulting.com/cps.txt"),
+  cpsUrl: envDefault("VITE_PKI_CPS_URL", "http://pki.encon.pki/cps.txt"),
   keyAlgorithm: envDefault("VITE_PKI_KEY_ALGORITHM", "ML-DSA-87"),
 }
 
@@ -53,7 +54,7 @@ const PKI = {
  * up and the online members domain-joined. Every VM is left `staged`, so the
  * project is one Deploy away from real clones.
  */
-export function buildPkiTemplateIntoStores() {
+export function buildPkiTemplateIntoStores(projectId?: string) {
   // Fresh slate — clear any graph the previous project left in the stores.
   useStagingStore.getState().loadOps([], null)
   useTopologyStore.getState().loadSnapshot([], [], {}, DEFAULT_VIEWPORT)
@@ -104,7 +105,7 @@ export function buildPkiTemplateIntoStores() {
     { x: 500, y: 340 },
     {
       domainName: PKI.domainName,
-      netbiosName: PKI.netbiosName,
+      netbiosName: `${projectNetbiosPrefix(projectId ?? null)}${PKI.netbiosName}`,
       forestLevel: PKI.forestLevel,
       domainAdminPassword: PKI.domainAdminPassword,
     },
