@@ -37,6 +37,10 @@ class SequenceError(Exception):
     probe that never reached its target state within the window)."""
 
 
+class SequenceCancelled(SequenceError):
+    """A cooperative cancellation was observed between sequence steps."""
+
+
 #: Verify-probe backoff (seconds) — geometric-ish, capped; the tail repeats the
 #: cap until ``verify_window_s`` elapses. ADWS / template propagation is slow,
 #: so the window (not this schedule) is the real bound.
@@ -55,6 +59,7 @@ class SequenceEngine:
         completed: set[str] | None = None,
         resumed_results: dict[str, dict] | None = None,
         on_step_done: Callable[[str, dict], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> None:
         self._dispatch = dispatch
         self._wait_for_reconnect = wait_for_reconnect
@@ -67,6 +72,7 @@ class SequenceEngine:
         self._completed = completed if completed is not None else set()
         self._resumed_results = resumed_results if resumed_results is not None else {}
         self._on_step_done = on_step_done or (lambda _s, _r: None)
+        self._should_stop = should_stop or (lambda: False)
 
     def run(self, steps: Iterable[Step], ctx: RunContext) -> dict[str, dict]:
         """Run every step in order; return {step_id: result}. Raises
@@ -74,6 +80,10 @@ class SequenceEngine:
         turns that into a failed op)."""
         results: dict[str, dict] = {}
         for step in steps:
+            if self._should_stop():
+                raise SequenceCancelled(
+                    f"deployment cancellation requested before step '{step.id}'"
+                )
             results[step.id] = self._run_one(step, ctx, results)
         return results
 

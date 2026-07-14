@@ -15,6 +15,8 @@ simulated stubs (see ``app.tasks._simulate_op``).
 import re
 import uuid
 import io
+import datetime
+from typing import Literal
 from enum import Enum
 from functools import partial
 
@@ -37,7 +39,7 @@ from app.core.authz import (
 from app.core.db import (
     SETTINGS_DOC_ID, get_db, plan_runs_col, settings_col, vm_registry_col,
 )
-from app.core.evidence import build_evidence_bundle
+from app.core.evidence import build_evidence_bundle, redact_evidence
 from app.core.esxi import _target_from_doc, manager
 from app.core.firstboot import TEMPLATE_IDS
 from app.core.golden_image import (
@@ -119,6 +121,10 @@ class DeployRequest(BaseModel):
     #: caller's ``guest-<user>-`` namespace regardless, so it needs no membership
     #: check (guests have no server-side project records today).
     project_id: str | None = Field(default=None, alias="projectId")
+
+
+class CancelRequest(BaseModel):
+    mode: Literal["step", "operation"] = "step"
 
 
 def _compile_or_422(req: DeployRequest) -> CompiledPlan:
@@ -536,6 +542,30 @@ async def deploy(
             )
 
     job_id = uuid.uuid4().hex
+    await plan_runs_col().update_one(
+        {"jobId": job_id},
+        {
+            "$setOnInsert": {
+                "jobId": job_id,
+                "owner": user.username,
+                "ownerRole": user.role.value,
+                "topology": redact_evidence(
+                    req.topology.model_dump(by_alias=True)
+                ),
+                "operations": redact_evidence(
+                    [op.model_dump(by_alias=True) for op in req.ops]
+                ),
+                "preflight": (
+                    preflight.model_dump(by_alias=True) if preflight else None
+                ),
+                "createdAt": int(datetime.datetime.now(datetime.UTC).timestamp() * 1000),
+                "updatedAt": int(datetime.datetime.now(datetime.UTC).timestamp() * 1000),
+                "ttlAt": datetime.datetime.now(datetime.UTC)
+                + datetime.timedelta(days=7),
+            }
+        },
+        upsert=True,
+    )
     transport.publish(job_id, QueuedMsg(), status=JobStatus.queued)
     # Owner role rides along so a minted agent's provisioning command is later
     # dispatched under the deploying user's role (both roles hold VM_PROVISION).
@@ -573,3 +603,24 @@ async def download_evidence(
             "X-Evidence-SHA256": digest,
         },
     )
+
+
+@router.post(
+    "/{job_id}/cancel",
+    status_code=202,
+    dependencies=[Depends(require_capability(Capability.DEPLOY))],
+)
+async def cancel_deployment(
+    job_id: str,
+    body: CancelRequest,
+    user: AuthedUser = Depends(get_current_user),
+) -> dict:
+    """Cooperatively stop after the active step or active operation."""
+
+    run = await plan_runs_col().find_one({"jobId": job_id}, {"owner": 1})
+    if run is None:
+        raise HTTPException(404, detail=f"Deployment job '{job_id}' was not found.")
+    if user.role is not Role.OPERATOR and run.get("owner") != user.username:
+        raise HTTPException(403, detail="This deployment belongs to another user.")
+    transport.request_cancel(job_id, body.mode)
+    return {"job_id": job_id, "mode": body.mode, "status": "stop-requested"}

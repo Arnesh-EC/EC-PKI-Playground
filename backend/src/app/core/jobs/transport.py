@@ -39,6 +39,22 @@ def snapshot_key(job_id: str) -> str:
     return f"jobs:{job_id}:snapshot"
 
 
+def cancel_key(job_id: str) -> str:
+    return f"jobs:{job_id}:cancel"
+
+
+def request_cancel(job_id: str, mode: str) -> None:
+    """Request a cooperative stop at the next step or operation boundary."""
+
+    if mode not in ("step", "operation"):
+        raise ValueError("cancel mode must be 'step' or 'operation'")
+    _client.set(cancel_key(job_id), mode, ex=_ACTIVE_TTL_SECONDS)
+
+
+def cancel_mode(job_id: str) -> str | None:
+    return _client.get(cancel_key(job_id))
+
+
 def publish(job_id: str, msg: Message, *, status: JobStatus, terminal: bool = False) -> None:
     """Write the snapshot and fan the message out to live subscribers.
 

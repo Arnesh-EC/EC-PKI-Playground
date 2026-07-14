@@ -361,7 +361,9 @@ def _provision_cloned_vm(
     and later cross-node ops assume every clone in the plan has a live agent."""
     from app.core import agentbus
     from app.core.firstboot import hostname_for
-    from app.core.sequences import NodeContext, RunContext, SequenceError
+    from app.core.sequences import (
+        NodeContext, RunContext, SequenceCancelled, SequenceError,
+    )
     from app.core.sequences.context import dns_records_for_context
     from app.core.sequences.definitions import provision_steps
     from app.core.sequences.worker import run_op_sequence
@@ -451,7 +453,13 @@ def _provision_cloned_vm(
                 on_step_complete=on_step_complete,
                 on_step_progress=on_step_progress,
                 on_step_tick=on_step_tick,
+                should_stop=lambda: transport.cancel_mode(job_id) == "step",
             )
+    except SequenceCancelled as exc:
+        _set_provision_state(conn_db, vm_name, "failed")
+        state[op.id] = OpRunState(status="cancelled", detail=str(exc))
+        push()
+        return False
     except (SequenceError, agentbus.AgentUnreachableError, agentbus.DispatchError,
             agentbus.ReconnectTimeoutError) as exc:
         _set_provision_state(conn_db, vm_name, "failed")
@@ -829,7 +837,7 @@ def _run_sequence_op(
     which is also how an op whose expansion is empty for the current topology
     degrades. A resolution/sequence failure fails the op (dependents cancel).
     """
-    from app.core.sequences import SequenceError
+    from app.core.sequences import SequenceCancelled, SequenceError
     from app.core.sequences.context import ContextError, build_run_context
     from app.core.sequences.definitions import op_sequence
     from app.core.sequences.worker import run_op_sequence
@@ -869,7 +877,12 @@ def _run_sequence_op(
             on_step_complete=on_step_complete,
             on_step_progress=on_step_progress,
             on_step_tick=on_step_tick,
+            should_stop=lambda: transport.cancel_mode(job_id) == "step",
         )
+    except SequenceCancelled as exc:
+        state[op.id] = OpRunState(status="cancelled", detail=str(exc))
+        push()
+        return False
     except SequenceError as exc:
         state[op.id] = OpRunState(status="error", detail=str(exc))
         push()
@@ -1063,6 +1076,18 @@ def run_plan_task(
                         conn, db, ops, preflight_snapshot
                     )
                 while remaining:
+                    cancel_mode = transport.cancel_mode(job_id)
+                    if cancel_mode:
+                        for pending in remaining:
+                            state[pending.id] = OpRunState(
+                                status="cancelled",
+                                detail=f"Stopped at the requested {cancel_mode} boundary.",
+                            )
+                            finished.add(pending.id)
+                            blocked.add(pending.id)
+                        remaining.clear()
+                        push()
+                        break
                     for idx, op in enumerate(remaining):
                         if all(dep in finished for dep in op.depends_on):
                             del remaining[idx]

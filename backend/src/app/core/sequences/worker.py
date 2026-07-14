@@ -133,6 +133,7 @@ def run_op_sequence(
     on_step_complete=None,
     on_step_progress=None,
     on_step_tick=None,
+    should_stop=None,
 ) -> dict[str, dict]:
     """Run one op's step sequence to completion (or raise
     :class:`~app.core.sequences.engine.SequenceError`).
@@ -207,5 +208,6 @@ def run_op_sequence(
         completed=completed,
         resumed_results=resumed_results,
         on_step_done=on_step_done,
+        should_stop=should_stop,
     )
     return engine.run(steps, ctx)

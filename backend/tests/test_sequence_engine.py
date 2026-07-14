@@ -4,6 +4,7 @@ artifact relay, and resume-skip, all with injected effects (no redis/Mongo)."""
 import pytest
 
 from app.core.sequences.engine import (
+    SequenceCancelled,
     SequenceEngine,
     SequenceError,
     deterministic_step_job_id,
@@ -424,3 +425,30 @@ def test_retry_policy_reraises_after_final_attempt():
             _ctx(),
         )
     assert clock.t == 5_000
+
+
+def test_cancellation_stops_between_steps_without_interrupting_dispatch():
+    clock = FakeClock()
+    commands = []
+
+    def dispatch(_key, _vm, command, *_args, **_kwargs):
+        commands.append(command)
+        return {"ok": True}
+
+    engine = SequenceEngine(
+        dispatch=dispatch,
+        wait_for_reconnect=lambda *a, **k: None,
+        sleep=clock.sleep,
+        now_ms=clock.now_ms,
+        should_stop=lambda: len(commands) == 1,
+    )
+
+    with pytest.raises(SequenceCancelled, match="before step 'second'"):
+        engine.run(
+            [
+                Step(id="first", command="dns.verify", target="primary"),
+                Step(id="second", command="ca.verify", target="primary"),
+            ],
+            _ctx(),
+        )
+    assert commands == ["dns.verify"]
