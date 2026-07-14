@@ -243,7 +243,7 @@ export const TEMPLATE_BY_ID = Object.fromEntries(
 export const AUTO_NAME_PREFIX: Record<string, string> = {
   domainController: "dc",
   certificateAuthority: "ca",
-  webServer: "pki",
+  webServer: "srv",
   client: "client",
-  standalone: "srv",
+  standalone: "misc",
 }
