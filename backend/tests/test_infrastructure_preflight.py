@@ -24,6 +24,12 @@ def _profile(role, *, base="ws-2025", datastore="store", network="PKI"):
             "systemContextValidated": True,
             "timeSynchronized": True, "windowsUpdatesCurrent": True,
             "backendCallbackReachable": True,
+            "agentCommands": [
+                "ca.publish_crl", "ca.uninstall", "dc.remove_forest",
+                "dns.remove_resources", "dns.verify_absent", "domain.leave",
+                "iis.remove_certenroll", "ocsp.remove",
+            ],
+            "publicationManifestVersion": 1,
             **(
                 {"ocspReferenceSha256": "b" * 64}
                 if role == "webServer" else {}

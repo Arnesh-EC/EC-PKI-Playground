@@ -12,7 +12,9 @@ from vmkit.datastore import get_base_vmdk_size
 from vmkit.esxi import get_datastore, get_vm_by_name, list_vm_names
 
 from app.core.db.models import now_ms
-from app.core.infrastructure import InfrastructureProfile, PkiRole
+from app.core.infrastructure import (
+    REQUIRED_AGENT_COMMANDS, InfrastructureProfile, PkiRole,
+)
 
 
 class PlannedMachine(BaseModel):
@@ -206,6 +208,8 @@ def preflight_infrastructure(
             and qualification.time_synchronized
             and qualification.windows_updates_current
             and qualification.backend_callback_reachable
+            and REQUIRED_AGENT_COMMANDS <= set(qualification.agent_commands)
+            and qualification.publication_manifest_version >= 1
             and (
                 machine.role not in ("rootCa", "issuingCa")
                 or qualification.ml_dsa_87_available

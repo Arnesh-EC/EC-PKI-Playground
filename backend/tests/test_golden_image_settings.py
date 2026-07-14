@@ -86,6 +86,12 @@ def test_role_specific_profile_overrides_legacy_image():
                         "timeSynchronized": True,
                         "windowsUpdatesCurrent": True,
                         "backendCallbackReachable": True,
+                        "agentCommands": [
+                            "ca.publish_crl", "ca.uninstall", "dc.remove_forest",
+                            "dns.remove_resources", "dns.verify_absent", "domain.leave",
+                            "iis.remove_certenroll", "ocsp.remove",
+                        ],
+                        "publicationManifestVersion": 1,
                     },
                 }
             ],

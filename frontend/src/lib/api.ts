@@ -201,6 +201,8 @@ export interface ImageQualification {
   timeSynchronized: boolean
   windowsUpdatesCurrent: boolean
   backendCallbackReachable: boolean
+  agentCommands: string[]
+  publicationManifestVersion: number
   ocspReferenceSha256: string | null
 }
 

@@ -208,7 +208,7 @@ export function SettingsDialog() {
   function patchQualification(
     role: InfrastructureProfile["role"],
     field: keyof ImageQualification,
-    value: string | boolean | null,
+    value: string | number | boolean | string[] | null,
   ) {
     setForm((current) => ({
       ...current,
@@ -218,7 +218,9 @@ export function SettingsDialog() {
           ...profile,
           qualification: {
             ...profile.qualification,
-            [field]: field === "windowsBuild" ? Number(value) : value,
+            [field]: ["windowsBuild", "publicationManifestVersion"].includes(field)
+              ? Number(value)
+              : value,
             validatedAt: Date.now(),
           },
         }
@@ -246,6 +248,8 @@ export function SettingsDialog() {
                 timeSynchronized: false,
                 windowsUpdatesCurrent: false,
                 backendCallbackReachable: false,
+                agentCommands: [],
+                publicationManifestVersion: 0,
                 ocspReferenceSha256: null,
               },
             }
@@ -462,6 +466,8 @@ export function SettingsDialog() {
                             <div className="space-y-1.5"><Label>Windows build</Label><Input type="number" min="26100" value={profile.qualification.windowsBuild} onChange={(event) => patchQualification(profile.role, "windowsBuild", event.target.value)} /></div>
                             <div className="space-y-1.5"><Label>Runner version</Label><Input value={profile.qualification.runnerVersion} onChange={(event) => patchQualification(profile.role, "runnerVersion", event.target.value)} /></div>
                             <div className="space-y-1.5 sm:col-span-3"><Label>Agent SHA-256</Label><Input value={profile.qualification.agentSha256} onChange={(event) => patchQualification(profile.role, "agentSha256", event.target.value)} /></div>
+                            <div className="space-y-1.5 sm:col-span-2"><Label>Qualified agent commands</Label><Input value={profile.qualification.agentCommands.join(", ")} onChange={(event) => patchQualification(profile.role, "agentCommands", event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} /></div>
+                            <div className="space-y-1.5"><Label>Publication manifest version</Label><Input type="number" min="1" value={profile.qualification.publicationManifestVersion} onChange={(event) => patchQualification(profile.role, "publicationManifestVersion", Number(event.target.value))} /></div>
                             {profile.role === "webServer" && <div className="space-y-1.5 sm:col-span-3"><Label>OCSP reference dump SHA-256</Label><Input value={profile.qualification.ocspReferenceSha256 ?? ""} onChange={(event) => patchQualification(profile.role, "ocspReferenceSha256", event.target.value || null)} /></div>}
                           </div>
                           <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">

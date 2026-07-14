@@ -14,6 +14,10 @@ PKI_ROLES: tuple[PkiRole, ...] = (
     "issuingCa",
     "webServer",
 )
+REQUIRED_AGENT_COMMANDS = frozenset({
+    "ca.publish_crl", "ca.uninstall", "dc.remove_forest", "dns.remove_resources",
+    "dns.verify_absent", "domain.leave", "iis.remove_certenroll", "ocsp.remove",
+})
 
 
 class ImageQualification(BaseModel):
@@ -32,6 +36,10 @@ class ImageQualification(BaseModel):
     windows_updates_current: bool = Field(default=False, alias="windowsUpdatesCurrent")
     backend_callback_reachable: bool = Field(
         default=False, alias="backendCallbackReachable"
+    )
+    agent_commands: list[str] = Field(default_factory=list, alias="agentCommands")
+    publication_manifest_version: int = Field(
+        default=0, alias="publicationManifestVersion", ge=0
     )
     ocsp_reference_sha256: str | None = Field(
         default=None, alias="ocspReferenceSha256", pattern=r"^[0-9a-fA-F]{64}$"

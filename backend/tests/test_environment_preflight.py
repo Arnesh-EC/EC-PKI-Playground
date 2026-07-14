@@ -23,6 +23,12 @@ def test_control_plane_requires_callback_agent_broker_and_worker(monkeypatch, tm
             mlDsa87Available=True, systemContextValidated=True,
             timeSynchronized=True, windowsUpdatesCurrent=True,
             backendCallbackReachable=True,
+            agentCommands=[
+                "ca.publish_crl", "ca.uninstall", "dc.remove_forest",
+                "dns.remove_resources", "dns.verify_absent", "domain.leave",
+                "iis.remove_certenroll", "ocsp.remove",
+            ],
+            publicationManifestVersion=1,
         )
     monkeypatch.setattr(subject.settings, "orchestrator_agent_path", str(agent))
     monkeypatch.setattr(subject.settings, "backend_public_url", "https://pki.example")
