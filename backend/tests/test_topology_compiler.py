@@ -86,6 +86,61 @@ def test_arbitrary_staging_order_compiles_to_the_same_plan():
     ]
 
 
+def test_supplied_template_compiles_joins_before_pki_services():
+    by_id = {op.id: op for op in _ops()}
+    by_id["join-issuing"].depends_on = ["create-issuing", "create-dc"]
+    by_id["join-web"].depends_on = ["create-web", "create-dc"]
+    by_id["connect-ca"].depends_on = ["create-issuing", "create-root"]
+    by_id["publish"].depends_on = ["create-issuing", "create-web", "connect-ca"]
+    supplied_order = [
+        by_id[op_id]
+        for op_id in (
+            "create-root",
+            "create-issuing",
+            "create-dc",
+            "create-web",
+            "join-issuing",
+            "join-web",
+            "connect-ca",
+            "publish",
+        )
+    ]
+
+    compiled = compile_plan(_topology(), supplied_order)
+
+    assert _shape(compiled) == [
+        ("create-dc", []),
+        ("create-root", []),
+        ("create-issuing", []),
+        ("create-web", []),
+        ("join-issuing", ["create-dc", "create-issuing"]),
+        ("join-web", ["create-dc", "create-web"]),
+        (
+            "connect-ca",
+            [
+                "create-dc",
+                "create-root",
+                "create-issuing",
+                "create-web",
+                "join-issuing",
+                "join-web",
+            ],
+        ),
+        (
+            "publish",
+            [
+                "create-dc",
+                "create-root",
+                "create-issuing",
+                "create-web",
+                "join-issuing",
+                "join-web",
+                "connect-ca",
+            ],
+        ),
+    ]
+
+
 def test_retry_without_completed_create_operations_still_compiles():
     remaining = [op for op in _ops() if op.kind.value != "createVm"]
 
