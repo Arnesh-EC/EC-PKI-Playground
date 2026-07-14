@@ -597,7 +597,7 @@ export function caDepth(nodeId: string, edges: Edge[]): number {
 // PKI trust gravity
 // ---------------------------------------------------------------------------
 
-export const TRUST_TIER_GAP = 308
+export const TRUST_TIER_GAP = 344
 export const TRUST_ORBIT_GAP = 344
 
 /**

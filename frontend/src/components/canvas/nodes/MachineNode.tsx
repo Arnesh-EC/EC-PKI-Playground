@@ -43,7 +43,7 @@ import { Badge } from "@/components/ui/badge"
 import { ProgressBar } from "./ProgressBar"
 
 const MACHINE_NODE_WIDTH = 304
-const MACHINE_NODE_HEIGHT = 268
+const MACHINE_NODE_HEIGHT = 304
 
 const SOCKET_APPEARANCE: Record<
   ServiceSocket,
@@ -82,16 +82,16 @@ function socketPlacement(socket: ServiceSocket, type: "source" | "target") {
         }
       : {
           position: Position.Left,
-          handleStyle: { top: "27%" },
-          labelStyle: { left: 3, top: "27%", transform: "translateY(-50%)" },
+          handleStyle: { top: 72 },
+          labelStyle: { left: 3, top: 72, transform: "translateY(-50%)" },
           labelClassName: "justify-start",
         }
   }
   const top = socket === SERVICE_SOCKET.publication
-    ? "27%"
+    ? 72
     : socket === SERVICE_SOCKET.ocsp
-      ? "36%"
-      : "45%"
+      ? 96
+      : 120
   return type === "source"
     ? {
         position: Position.Right,
@@ -478,6 +478,10 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
           ))}
         </dl>
       </div>
+
+      {/* Every role keeps the same footer band; bottom service outputs such as
+          CA Issue sit below this divider instead of crowding the fact grid. */}
+      <div aria-hidden="true" className="absolute inset-x-5 bottom-[52px] border-t" />
     </div>
   )
 }
