@@ -321,6 +321,9 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
         minHeight: MACHINE_NODE_HEIGHT,
         maxHeight: MACHINE_NODE_HEIGHT,
       }}
+      onAnimationEnd={(event) => {
+        if (event.animationName === "trust-gravity-settle") updateNodeInternals(id)
+      }}
       className={cn(
         "group/node relative overflow-visible rounded-xl border bg-card text-card-foreground shadow-sm select-none",
         "transition-shadow",
