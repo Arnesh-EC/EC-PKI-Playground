@@ -41,6 +41,8 @@ from app.core.golden_image import (
     preflight_golden_image,
 )
 from app.core.ippool import guest_network_from_doc
+from app.core.infrastructure import infrastructure_profiles_from_doc, role_for_template
+from app.core.infrastructure_preflight import PlannedMachine, preflight_infrastructure
 from app.core.settings import settings
 from app.core.template_config import validate_template_config
 from app.core.jobs import transport
@@ -499,24 +501,31 @@ async def deploy(
     # aggregate datastore capacity, and every derived inventory name against
     # the live ESXi host. The snapshot rides with the job and is checked again
     # by the worker before its first datastore write.
-    preflight: GoldenImagePreflight | None = None
+    preflight = None
     if create_ops:
         assert target is not None  # validate_plan rejected an unconfigured target
         conn = await run_in_threadpool(manager.get, target)
         preflight = await run_in_threadpool(
             partial(
-                preflight_golden_image,
+                preflight_infrastructure,
                 conn,
-                image_config,
-                requested_vm_names=[op.params["vmName"] for op in create_ops],
-                clone_count=len(create_ops),
+                infrastructure_profiles_from_doc(doc),
+                [
+                    PlannedMachine(
+                        role=role_for_template(
+                            op.params["template"], op.params.get("caType")
+                        ),
+                        name=op.params["vmName"],
+                    )
+                    for op in create_ops
+                ],
             )
         )
         if not preflight.ready:
             raise HTTPException(
                 409,
                 detail={
-                    "message": "Golden-image preflight failed.",
+                    "message": "Infrastructure preflight failed.",
                     "preflight": preflight.model_dump(by_alias=True),
                 },
             )

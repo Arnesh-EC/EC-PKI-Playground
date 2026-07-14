@@ -52,6 +52,12 @@ from app.core.ippool import (
     load_guest_network_sync,
     release_ip_sync,
 )
+from app.core.infrastructure import infrastructure_profiles_from_doc, role_for_template
+from app.core.infrastructure_preflight import (
+    InfrastructurePreflight,
+    PlannedMachine,
+    preflight_infrastructure,
+)
 from app.core.settings import settings
 from app.core.template_config import encrypt_config_secrets, extract_template_config
 from app.core.jobs import transport
@@ -920,6 +926,35 @@ def _verify_worker_preflight(
     return config
 
 
+def _verify_worker_infrastructure_preflight(
+    conn: "Connection", db, ops: list["PlanOp"], accepted_payload: dict | None
+):
+    """Re-check the complete role mapping and reservation before cloning."""
+
+    if accepted_payload is None:
+        raise RuntimeError("Deploy job is missing its infrastructure preflight snapshot.")
+    accepted = InfrastructurePreflight(**accepted_payload)
+    doc = db["settings"].find_one({"_id": "global"})
+    profiles = infrastructure_profiles_from_doc(doc)
+    machines = [
+        PlannedMachine(
+            role=role_for_template(op.params["template"], op.params.get("caType")),
+            name=op.params["vmName"],
+        )
+        for op in ops
+        if op.kind.value == "createVm"
+    ]
+    current = preflight_infrastructure(conn, profiles, machines)
+    if not current.ready:
+        failed = "; ".join(check.detail for check in current.checks if not check.ok)
+        raise RuntimeError(f"Infrastructure preflight no longer passes: {failed}")
+    if current.snapshot_id != accepted.snapshot_id:
+        raise RuntimeError(
+            "Infrastructure prerequisites changed after preflight; retry the deploy."
+        )
+    return profiles
+
+
 @celery_app.task(name="run_plan")
 def run_plan_task(
     job_id: str,
@@ -984,7 +1019,7 @@ def run_plan_task(
                 image_config = None
                 if any(op.kind is PlanOpKind.create_vm for op in ops):
                     conn = _live_worker_connection(conn)
-                    image_config = _verify_worker_preflight(
+                    image_config = _verify_worker_infrastructure_preflight(
                         conn, db, ops, preflight_snapshot
                     )
                 while remaining:
@@ -1034,7 +1069,11 @@ def run_plan_task(
                             push,
                             owner_role,
                             request.topology,
-                            image_config,
+                            image_config[
+                                role_for_template(
+                                    op.params["template"], op.params.get("caType")
+                                )
+                            ],
                         )
                     else:
                         # Real command sequence where one exists (domainJoin,

@@ -28,6 +28,8 @@ from app.core.golden_image import (
 )
 from app.core.ippool import guest_network_from_doc, sync_pool_async, validate_network
 from app.core.infrastructure import InfrastructureProfile
+from app.core.infrastructure import infrastructure_profiles_from_doc
+from app.core.infrastructure_preflight import PlannedMachine, preflight_infrastructure
 from app.core.secrets import encrypt_secret
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -79,6 +81,17 @@ class GoldenImageValidationRequest(BaseModel):
     clone_count: int | None = Field(default=None, ge=0, le=50, alias="cloneCount")
 
 
+class InfrastructureValidationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    machines: list[PlannedMachine] = Field(default_factory=lambda: [
+        PlannedMachine(role="domainController", name="DC01"),
+        PlannedMachine(role="rootCa", name="CA01"),
+        PlannedMachine(role="issuingCa", name="CA02"),
+        PlannedMachine(role="webServer", name="SRV1"),
+    ], min_length=1, max_length=50)
+
+
 def _present(doc: dict) -> dict:
     """API shape: replace the ciphertext blob with a ``hasPassword`` flag."""
     out = from_mongo(doc)
@@ -111,6 +124,28 @@ async def validate_golden_image(
             config,
             requested_vm_names=body.requested_vm_names,
             clone_count=body.clone_count,
+        )
+    )
+    return result.model_dump(by_alias=True)
+
+
+@router.post(
+    "/infrastructure/validate",
+    dependencies=[Depends(require_capability(Capability.SETTINGS_READ))],
+)
+async def validate_infrastructure(
+    body: InfrastructureValidationRequest,
+    conn: Connection = Depends(get_esxi),
+) -> dict:
+    """Validate all selected role profiles as one capacity reservation."""
+
+    doc = await settings_col().find_one({"_id": SETTINGS_DOC_ID})
+    result = await run_in_threadpool(
+        partial(
+            preflight_infrastructure,
+            conn,
+            infrastructure_profiles_from_doc(doc),
+            body.machines,
         )
     )
     return result.model_dump(by_alias=True)
