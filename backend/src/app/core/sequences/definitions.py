@@ -556,6 +556,19 @@ def _web_server_cert_sequence(ctx: RunContext) -> list[Step]:
                     timeout_s=300,
                 )
             )
+    steps.append(
+        Step(
+            id="enroll-health-probe",
+            command="cert.enroll",
+            target=PRIMARY,
+            params={
+                "template": "Workstation",
+                "exportPath": "C:\\Transfer\\lab-health-probe.cer",
+                "refreshPolicy": "true",
+            },
+            timeout_s=900,
+        )
+    )
     return steps
 
 
@@ -721,13 +734,18 @@ def _ca_connect_sequence(ctx: RunContext) -> list[Step]:
              params={"templates": "OCSPResponseSigning,Workstation"})
     )
     if has_web and has_dc:
-        steps.append(
+        steps += [
             Step(id="grant-ocsp", command="template.grant_access", target=DC,
                  params=lambda rt: {
                      "template": "OCSPResponseSigning",
                      "computer": ctx.node(WEB).hostname,
-                 })
-        )
+                 }),
+            Step(id="grant-health-probe", command="template.grant_access", target=DC,
+                 params=lambda rt: {
+                     "template": "Workstation",
+                     "computer": ctx.node(WEB).hostname,
+                 }),
+        ]
     return steps
 
 

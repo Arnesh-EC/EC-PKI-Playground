@@ -230,6 +230,13 @@ def test_caconnect_grant_targets_the_web_computer_on_the_dc():
     assert params["template"] == "OCSPResponseSigning"
     assert params["computer"] == "guest-abc12-srv1"
 
+    health_grant = next(
+        s for s in op_sequence("caConnect", ctx) if s.id == "grant-health-probe"
+    )
+    health_params = health_grant.resolve_params(ctx)
+    assert health_params["template"] == "Workstation"
+    assert health_params["computer"] == "guest-abc12-srv1"
+
 
 def test_caconnect_issuing_cdp_includes_unc_and_ocsp_when_web_present():
     ctx = _full_lab_ctx()

@@ -55,6 +55,7 @@ def test_web_server_cert_sequence_shape():
         "dns.apply_resources",
         "dns.verify",
         "dns.verify",
+        "cert.enroll",
     ]
 
 
@@ -100,6 +101,21 @@ def test_cname_and_http_are_verified_from_web_and_ca():
         step.resolve_params(ctx)["httpUrl"] == "http://pki.encon.pki/CertEnroll/"
         for step in verify
     )
+
+
+def test_web_sequence_enrolls_a_dedicated_health_probe():
+    ctx = _web_ctx()
+    enroll = next(
+        step for step in op_sequence("webServerCert", ctx)
+        if step.id == "enroll-health-probe"
+    )
+
+    assert enroll.target == "primary"
+    assert enroll.resolve_params(ctx) == {
+        "template": "Workstation",
+        "exportPath": "C:\\Transfer\\lab-health-probe.cer",
+        "refreshPolicy": "true",
+    }
 
 
 def _client_ctx(with_ca=True):
