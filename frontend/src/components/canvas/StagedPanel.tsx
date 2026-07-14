@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { Popover } from "@base-ui/react/popover"
+import { toast } from "sonner"
 import {
   AlertTriangle,
   Building2,
@@ -18,10 +19,16 @@ import type { LucideIcon } from "lucide-react"
 
 import { OP_KIND, OP_STATUS, transitiveDependents } from "@/lib/staging"
 import type { StagedOp } from "@/lib/staging"
-import { useStagingStore } from "@/store/staging"
+import { compileDeployPlan, type CompiledDeployPlan } from "@/lib/api"
+import {
+  prepareDeployPlan,
+  useStagingStore,
+  type PreparedDeployPlan,
+} from "@/store/staging"
 import { useTopologyStore } from "@/store/topology"
 import { Button } from "@/components/ui/button"
 import { StagedRemoveDialog } from "./StagedRemoveDialog"
+import { DeployCompilerDialog } from "./DeployCompilerDialog"
 
 const KIND_ICON: Record<string, LucideIcon> = {
   [OP_KIND.createVm]: Server,
@@ -88,6 +95,9 @@ export function StagedPanel() {
   const nodes = useTopologyStore((s) => s.nodes)
 
   const [pendingRemoval, setPendingRemoval] = useState<StagedOp[] | null>(null)
+  const [review, setReview] = useState<CompiledDeployPlan | null>(null)
+  const [prepared, setPrepared] = useState<PreparedDeployPlan | null>(null)
+  const [compiling, setCompiling] = useState(false)
 
   function nodeName(id: string) {
     return nodes.find((n) => n.id === id)?.data.name ?? "?"
@@ -113,8 +123,28 @@ export function StagedPanel() {
     undo()
   }
 
-  function handleDeploy() {
-    if (deploying || ops.length === 0) return
+  async function handleDeploy() {
+    if (deploying || compiling || ops.length === 0) return
+    setCompiling(true)
+    const next = prepareDeployPlan(ops)
+    try {
+      const compiled = await compileDeployPlan(
+        next.payload,
+        next.topology,
+        next.projectId,
+      )
+      setPrepared(next)
+      setReview(compiled)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to compile deployment.")
+    } finally {
+      setCompiling(false)
+    }
+  }
+
+  function confirmDeploy() {
+    setReview(null)
+    setPrepared(null)
     deploy()
   }
 
@@ -180,13 +210,13 @@ export function StagedPanel() {
         <Button
           size="sm"
           className="w-full"
-          disabled={ops.length === 0 || deploying}
+          disabled={ops.length === 0 || deploying || compiling}
           onClick={handleDeploy}
         >
-          {deploying ? (
+          {deploying || compiling ? (
             <>
               <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-              Deploying {doneCount}/{ops.length}…
+              {compiling ? "Compiling review…" : `Deploying ${doneCount}/${ops.length}…`}
             </>
           ) : ops.length === 0 ? (
             "Nothing staged"
@@ -202,6 +232,15 @@ export function StagedPanel() {
         ops={pendingRemoval}
         onConfirm={confirmRemove}
         onCancel={() => setPendingRemoval(null)}
+      />
+      <DeployCompilerDialog
+        review={review}
+        prepared={prepared}
+        onConfirm={confirmDeploy}
+        onCancel={() => {
+          setReview(null)
+          setPrepared(null)
+        }}
       />
     </div>
   )

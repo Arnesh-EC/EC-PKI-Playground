@@ -93,6 +93,13 @@ interface StagingState {
   resumePlanJob: () => void
 }
 
+export interface PreparedDeployPlan {
+  ops: StagedOp[]
+  payload: PlanOpPayload[]
+  topology: ReturnType<typeof buildDeployTopology>
+  projectId: string | null
+}
+
 /**
  * Builds one op's wire params (and, for authored createVm ops, the inline
  * file list). `createVm` params are never persisted on the op itself —
@@ -149,6 +156,41 @@ function emptyIsoNodes(ops: StagedOp[]): string[] {
     if (empty) names.push(node?.data.name ?? op.targetNodeId)
   }
   return names
+}
+
+/** Build the exact retry-pruned request used by both compiler review and deploy. */
+export function prepareDeployPlan(ops = useStagingStore.getState().ops): PreparedDeployPlan {
+  const resettable = ops
+    .filter((op) => op.status !== OP_STATUS.done)
+    .map((op) =>
+      op.status === OP_STATUS.error || op.status === OP_STATUS.cancelled
+        ? { ...op, status: OP_STATUS.staged, progress: undefined, detail: undefined }
+        : op,
+    )
+  const keptIds = new Set(resettable.map((op) => op.id))
+  const pruned = resettable.map((op) => ({
+    ...op,
+    dependsOn: op.dependsOn.filter((dep) => keptIds.has(dep)),
+  }))
+  const payload: PlanOpPayload[] = pruned.map((op) => {
+    const { params, files } = buildOpPayload(op)
+    return {
+      id: op.id,
+      kind: op.kind,
+      target: op.targetNodeId,
+      ...(op.secondaryNodeId ? { secondary: op.secondaryNodeId } : {}),
+      params,
+      ...(files ? { files } : {}),
+      dependsOn: op.dependsOn,
+    }
+  })
+  const topologyState = useTopologyStore.getState()
+  return {
+    ops: pruned,
+    payload,
+    topology: buildDeployTopology(topologyState.nodes, topologyState.edges),
+    projectId: useProjectsStore.getState().activeProjectId,
+  }
 }
 
 /** Folds one `plan-state` snapshot into the staging list and mirrors createVm/edge transitions onto the canvas. Idempotent — safe to apply the same snapshot more than once (reconnects/replays). */
@@ -419,46 +461,17 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
     // ops back to staged so a retry resends them alongside whatever hadn't
     // run yet. `dependsOn` is then pruned to only ids still present, so a
     // dropped `done` op's id never reaches the backend as an unknown dep.
-    const resettable = ops
-      .filter((op) => op.status !== OP_STATUS.done)
-      .map((op) =>
-        op.status === OP_STATUS.error || op.status === OP_STATUS.cancelled
-          ? { ...op, status: OP_STATUS.staged, progress: undefined, detail: undefined }
-          : op,
-      )
-    const keptIds = new Set(resettable.map((op) => op.id))
-    const pruned = resettable.map((op) => ({
-      ...op,
-      dependsOn: op.dependsOn.filter((dep) => keptIds.has(dep)),
-    }))
+    const prepared = prepareDeployPlan(ops)
+    const pruned = prepared.ops
 
     const topologyStore = useTopologyStore.getState()
     for (const op of pruned) {
       if (op.edgeId) topologyStore.setEdgeHealth(op.edgeId, CONNECTION_HEALTH.planned)
     }
 
-    const payload: PlanOpPayload[] = pruned.map((op) => {
-      const { params, files } = buildOpPayload(op)
-      return {
-        id: op.id,
-        kind: op.kind,
-        target: op.targetNodeId,
-        // The DC/parent-CA/issuing-CA the op wires to — the backend
-        // resolves its real guest-namespaced identity to build join/enroll
-        // command params. Dropped previously; now carried through.
-        ...(op.secondaryNodeId ? { secondary: op.secondaryNodeId } : {}),
-        params,
-        ...(files ? { files } : {}),
-        dependsOn: op.dependsOn,
-      }
-    })
-
     set({ ops: pruned.map((op) => ({ ...op, status: OP_STATUS.pending })) })
 
-    const projectId = useProjectsStore.getState().activeProjectId
-    const topologyState = useTopologyStore.getState()
-    const topology = buildDeployTopology(topologyState.nodes, topologyState.edges)
-    deployPlan(payload, topology, projectId)
+    deployPlan(prepared.payload, prepared.topology, prepared.projectId)
       .then(({ job_id }) => {
         set({ deployJobId: job_id })
         attachPlanSocket(job_id, token)
