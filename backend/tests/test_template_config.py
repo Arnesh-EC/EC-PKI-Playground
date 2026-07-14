@@ -132,6 +132,13 @@ def test_mldsa_ca_drops_keylength_and_hash():
     assert "hashAlgorithm" not in config
 
 
+def test_ca_defaults_to_mldsa_87():
+    config = extract_template_config("certificateAuthority", {})
+    assert config["keyAlgorithm"] == "ML-DSA-87"
+    assert "keyLength" not in config
+    assert "hashAlgorithm" not in config
+
+
 def test_rsa_ca_keeps_keylength_and_hash():
     """RSA (and any non-ML-DSA algorithm) still carries key length + hash."""
     config = extract_template_config(

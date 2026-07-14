@@ -141,7 +141,7 @@ export const TEMPLATE_CATALOG: TemplateDef[] = [
         label: "Key Algorithm",
         type: "select",
         options: ["RSA", "ECDSA", "ML-DSA-87"],
-        default: "RSA",
+        default: "ML-DSA-87",
       },
       {
         key: "keyLength",
