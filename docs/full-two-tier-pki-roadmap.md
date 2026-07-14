@@ -179,12 +179,12 @@ changes after preflight, the job should fail before the first clone.
 
 ## Phased Delivery
 
-### Phase 0 - Stabilize staging and visual semantics
+### Phase 0 - Stabilize staging and visual semantics [complete]
 
-- Fix node width and progress overflow.
-- Keep staged nodes connectable and add a regression test.
+- [x] Fix node width and progress overflow.
+- [x] Keep staged nodes connectable and add a regression test.
 - [x] Add typed edge labels, legends, tooltips, and missing-relationship warnings.
-- Make the supplied project use DC01/CA01/CA02/SRV1, the guide's forest
+- [x] Make the supplied project use DC01/CA01/CA02/SRV1, the guide's forest
   level, and ML-DSA-87.
 
 **Exit:** the complete intended topology can be built in any interaction order
