@@ -106,11 +106,10 @@ class VmRegistryEntry(MongoModel):
 class SettingsDoc(BaseModel):
     """The settings singleton (fixed ``_id`` — not a ``MongoModel``).
 
-    Authoritative for the one shared org-wide ESXi target — seeded
-    from env on first boot, then admin-editable via the settings routes with
-    no restart (``core/esxi.py`` reloads it per request). The password is
-    stored only as the ``core/secrets.py`` ``{keyId, nonce, ciphertext}``
-    shape and is never returned by the API.
+    Authoritative for the shared ESXi target and guided-deploy golden image —
+    seeded from env on first boot, then admin-editable via the settings routes
+    with no restart. The password is stored only as the ``core/secrets.py``
+    ``{keyId, nonce, ciphertext}`` shape and is never returned by the API.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -122,6 +121,12 @@ class SettingsDoc(BaseModel):
         default=None, alias="esxiPasswordEnc"
     )
     esxi_port: int = Field(default=443, alias="esxiPort")
+    clone_base: str = Field(default="ws-2025-base", alias="cloneBase")
+    clone_datastore: str = Field(default="datastore1", alias="cloneDatastore")
+    clone_guest_os: str = Field(
+        default="windows2022srvNext-64", alias="cloneGuestOs"
+    )
+    clone_max_usage_pct: float = Field(default=80.0, alias="cloneMaxUsagePct")
     # Guest subnet — an inclusive start/end range (not a CIDR, so it
     # can never include the network/broadcast/gateway addresses) that the IP
     # pool (``core/ippool.py``) is seeded from. All four of start/end/gateway/
@@ -135,7 +140,7 @@ class SettingsDoc(BaseModel):
     guest_dns2: str | None = Field(default=None, alias="guestDns2")
     guest_dns_suffix: str | None = Field(default=None, alias="guestDnsSuffix")
     feature_flags: dict[str, bool] = Field(default_factory=dict, alias="featureFlags")
-    schema_version: int = Field(default=3, alias="schemaVersion")
+    schema_version: int = Field(default=4, alias="schemaVersion")
     updated_at: int = Field(alias="updatedAt")
 
 

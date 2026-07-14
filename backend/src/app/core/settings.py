@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     guest_dns2: str | None = None
     guest_dns_suffix: str | None = None
 
+    # Golden image used by guided deploys. These values seed the shared settings
+    # document on first boot; operator edits there become authoritative. The
+    # expected guest OS is the VMware ``guestOS`` identifier exposed by the
+    # registered Windows Server image, not the Windows marketing name.
+    clone_base: str = "ws-2025-base"
+    clone_datastore: str = "datastore1"
+    clone_guest_os: str = "windows2022srvNext-64"
+    clone_max_usage_pct: float = 80.0
+
     # Clone job queue: Valkey is the Celery broker, a per-job pub/sub bus, and the
     # snapshot store the job WebSocket reads from. The clone worker process opens
     # its own ESXi connection against the shared target from the settings document
@@ -82,12 +91,6 @@ class Settings(BaseSettings):
     # Intended `celery worker --concurrency=N`; not enforced here, just documents
     # the global cap the deploy should run with.
     clone_concurrency: int = 2
-    # The golden template every createVm clones from — its ``<base>/<base>.vmdk``
-    # is server-side copied into each new ``<vmName>/`` directory. A clone whose
-    # vmName equals this would collide with (and, worse, could corrupt) the base
-    # image's own datastore directory, so ``deploy.validate_plan`` rejects it.
-    clone_base: str = "ws-2025-base"
-
     # MongoDB — system of record for projects, the VM registry, the settings
     # document, and users. Reachability is checked at startup in the app
     # lifespan (fail-fast ping), not here — a URL default always parses.

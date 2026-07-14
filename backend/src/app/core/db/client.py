@@ -166,6 +166,10 @@ async def _seed_settings_doc() -> None:
             encrypt_secret(settings.esxi_password) if settings.esxi_password else None
         ),
         esxi_port=settings.esxi_port,
+        clone_base=settings.clone_base,
+        clone_datastore=settings.clone_datastore,
+        clone_guest_os=settings.clone_guest_os,
+        clone_max_usage_pct=settings.clone_max_usage_pct,
         guest_ip_start=settings.guest_ip_start,
         guest_ip_end=settings.guest_ip_end,
         guest_prefix=settings.guest_prefix,
@@ -187,6 +191,22 @@ async def _seed_settings_doc() -> None:
         await settings_col().update_one(
             {"_id": SETTINGS_DOC_ID, "esxiPasswordEnc": None},
             {"$set": {"esxiPasswordEnc": encrypt_secret(settings.esxi_password)}},
+        )
+    # Backfill golden-image fields added in schema v4 without overwriting an
+    # operator's later choices.
+    await settings_col().update_one(
+        {"_id": SETTINGS_DOC_ID},
+        {"$set": {"schemaVersion": 4}},
+    )
+    for field, value in (
+        ("cloneBase", settings.clone_base),
+        ("cloneDatastore", settings.clone_datastore),
+        ("cloneGuestOs", settings.clone_guest_os),
+        ("cloneMaxUsagePct", settings.clone_max_usage_pct),
+    ):
+        await settings_col().update_one(
+            {"_id": SETTINGS_DOC_ID, field: {"$exists": False}},
+            {"$set": {field: value}},
         )
     # Same backfill idea for the guest subnet (fields new in schema v3): the
     # env seed fills a doc that has never had a range, never overwrites one.

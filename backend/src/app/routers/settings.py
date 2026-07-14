@@ -32,6 +32,18 @@ class SettingsUpdate(BaseModel):
     esxi_user: str | None = Field(default=None, alias="esxiUser")
     esxi_password: str | None = Field(default=None, alias="esxiPassword")
     esxi_port: int | None = Field(default=None, alias="esxiPort")
+    clone_base: str | None = Field(
+        default=None, min_length=1, max_length=80, alias="cloneBase"
+    )
+    clone_datastore: str | None = Field(
+        default=None, min_length=1, max_length=80, alias="cloneDatastore"
+    )
+    clone_guest_os: str | None = Field(
+        default=None, min_length=1, max_length=80, alias="cloneGuestOs"
+    )
+    clone_max_usage_pct: float | None = Field(
+        default=None, gt=0, le=100, alias="cloneMaxUsagePct"
+    )
     guest_ip_start: str | None = Field(default=None, alias="guestIpStart")
     guest_ip_end: str | None = Field(default=None, alias="guestIpEnd")
     guest_prefix: int | None = Field(default=None, alias="guestPrefix")
