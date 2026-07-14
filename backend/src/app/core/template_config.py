@@ -78,7 +78,7 @@ def _reverse_zone(value: str) -> bool:
     if not normalized.endswith(suffix):
         return False
     labels = normalized[: -len(suffix)].split(".")
-    return 1 <= len(labels) <= 4 and all(
+    return 1 <= len(labels) <= 3 and all(
         label.isdigit() and 0 <= int(label) <= 255 for label in labels
     )
 

@@ -127,6 +127,17 @@ class PlanCompilationError(ValueError):
         super().__init__("; ".join(item.message for item in diagnostics))
 
 
+def _valid_reverse_zone(value: str) -> bool:
+    normalized = value.lower().rstrip(".")
+    suffix = ".in-addr.arpa"
+    if not normalized.endswith(suffix):
+        return False
+    labels = normalized[: -len(suffix)].split(".")
+    return 1 <= len(labels) <= 3 and all(
+        label.isdigit() and 0 <= int(label) <= 255 for label in labels
+    )
+
+
 _DURATION_SECONDS = {
     "createVm": 900,
     "domainLeave": 600,
@@ -494,7 +505,7 @@ def validate_topology(topology: TopologyDocument) -> None:
                     node_ids=[record.subject],
                 )
             )
-        if record.kind is DnsRecordKind.ptr and not record.zone.lower().endswith(".in-addr.arpa"):
+        if record.kind is DnsRecordKind.ptr and not _valid_reverse_zone(record.zone):
             diagnostics.append(
                 TopologyDiagnostic(
                     code="dns-invalid-reverse-zone",

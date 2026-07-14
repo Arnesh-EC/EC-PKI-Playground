@@ -154,3 +154,21 @@ def test_invalid_reverse_zone_and_duplicate_record_are_reported():
         validate_topology(topology)
 
     assert _codes(caught.value) >= {"dns-invalid-reverse-zone", "dns-record-conflict"}
+
+
+def test_non_numeric_reverse_zone_is_rejected():
+    topology = _full_topology()
+    topology.dns_records = [
+        DnsRecordResource(
+            id="ptr-web",
+            kind=DnsRecordKind.ptr,
+            server="dc",
+            subject="web",
+            zone="foo.in-addr.arpa",
+        )
+    ]
+
+    with pytest.raises(TopologyValidationError) as caught:
+        validate_topology(topology)
+
+    assert "dns-invalid-reverse-zone" in _codes(caught.value)
