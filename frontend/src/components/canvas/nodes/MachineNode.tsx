@@ -83,7 +83,7 @@ function socketPlacement(socket: ServiceSocket, type: "source" | "target") {
       : {
           position: Position.Left,
           handleStyle: { top: "27%" },
-          labelStyle: { left: 16, top: "27%", transform: "translateY(-50%)" },
+          labelStyle: { left: 3, top: "27%", transform: "translateY(-50%)" },
           labelClassName: "justify-start",
         }
   }
@@ -96,13 +96,13 @@ function socketPlacement(socket: ServiceSocket, type: "source" | "target") {
     ? {
         position: Position.Right,
         handleStyle: { top },
-        labelStyle: { right: 16, top, transform: "translateY(-50%)" },
+        labelStyle: { right: 3, top, transform: "translateY(-50%)" },
         labelClassName: "flex-row-reverse justify-start text-right",
       }
     : {
         position: Position.Left,
         handleStyle: { top },
-        labelStyle: { left: 16, top, transform: "translateY(-50%)" },
+        labelStyle: { left: 3, top, transform: "translateY(-50%)" },
         labelClassName: "justify-start",
       }
 }
@@ -396,7 +396,7 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
               aria-hidden="true"
               style={placement.labelStyle}
               className={cn(
-                "pointer-events-none absolute z-10 flex max-w-[132px] items-center gap-1.5 rounded bg-card/95 px-1.5 py-1",
+                "pointer-events-none absolute z-10 flex max-w-[132px] items-center gap-1 rounded bg-card/95 px-1 py-1",
                 "text-[10px] font-medium leading-none text-muted-foreground transition-opacity duration-150",
                 !gesture || visible ? "opacity-100" : "opacity-0",
                 placement.labelClassName,
