@@ -31,7 +31,10 @@ export const URLS = {
     powerOn: (name: string) => `/vm/${encodeURIComponent(name)}/power-on`,
     powerOff: (name: string) => `/vm/${encodeURIComponent(name)}/power-off`,
   },
-  deploy: "/deploy",
+  deploy: {
+    root: "/deploy",
+    compile: "/deploy/compile",
+  },
   settings: {
     root: "/settings",
     validateGoldenImage: "/settings/golden-image/validate",

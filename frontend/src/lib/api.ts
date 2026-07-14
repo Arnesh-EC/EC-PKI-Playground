@@ -444,12 +444,42 @@ export interface TopologyPayload {
   }>
 }
 
+export interface TopologyDiagnosticPayload {
+  code: string
+  message: string
+  nodeIds: string[]
+  edgeIds: string[]
+}
+
+export interface CompiledDeployPlan {
+  topologyVersion: number
+  operations: PlanOpPayload[]
+  criticalPath: string[]
+  estimatedDurationSeconds: number
+  criticalPathDurationSeconds: number
+  resources: {
+    nodes: number
+    relationships: number
+    dnsRecords: TopologyPayload["dnsRecords"]
+  }
+}
+
+export const compileDeployPlan = (
+  ops: PlanOpPayload[],
+  topology: TopologyPayload,
+  projectId?: string | null,
+) =>
+  request<CompiledDeployPlan>(URLS.deploy.compile, {
+    method: "POST",
+    body: JSON.stringify({ ops, topology, ...(projectId ? { projectId } : {}) }),
+  })
+
 export const deployPlan = (
   ops: PlanOpPayload[],
   topology: TopologyPayload,
   projectId?: string | null,
 ) =>
-  request<JobAccepted>(URLS.deploy, {
+  request<JobAccepted>(URLS.deploy.root, {
     method: "POST",
     // The backend derives guest VM names as guest-<user>-<project>-<machine>,
     // so the active project rides along as the <project> segment (required for
