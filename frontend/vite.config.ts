@@ -15,6 +15,7 @@ export default defineConfig({
     },
   },
   server: {
+    port: 5432,
     proxy: {
       // Frontend calls /api/*; backend now serves under /api so no rewrite needed.
       // `ws: true` also forwards the WebSocket upgrade for /api/ws/* (job progress).
