@@ -499,6 +499,50 @@ def _domain_join_sequence(ctx: RunContext) -> list[Step]:
     return steps
 
 
+def _domain_leave_sequence(ctx: RunContext) -> list[Step]:
+    """Leave the forest, reboot, and remove only topology-owned DNS records."""
+
+    dc = ctx.node(DC)
+
+    def leave_params(rt: StepRuntime) -> dict[str, str]:
+        return {
+            "workgroup": "WORKGROUP",
+            "username": _admin_username(ctx.netbios),
+            "password": dc.template_config.get("domainAdminPassword", ""),
+        }
+
+    steps = [
+        Step(
+            id="domain-leave", command="domain.leave", target=PRIMARY,
+            params=leave_params, secret_keys=("password",), retry_delays_s=_AD_RETRY,
+        ),
+        Step(
+            id="reboot", command="system.reboot", target=PRIMARY,
+            expects_disconnect=True, timeout_s=1200,
+            verify=Step(id="domain-verify", command="domain.verify", target=PRIMARY),
+            verify_predicate=lambda result: result.get("part_of_domain") is False,
+            verify_window_s=600,
+        ),
+    ]
+    records = _records_for(ctx, ctx.node(PRIMARY).node_id, ("A", "PTR", "CNAME"))
+    if records:
+        steps.extend(
+            [
+                Step(
+                    id="dns-remove", command="dns.remove_resources", target=DC,
+                    params=lambda rt: _dns_params(ctx, records),
+                    retry_delays_s=_DNS_RETRY,
+                ),
+                Step(
+                    id="dns-verify-absent", command="dns.verify_absent", target=DC,
+                    params=lambda rt: _dns_params(ctx, records),
+                    retry_delays_s=_DNS_RETRY,
+                ),
+            ]
+        )
+    return steps
+
+
 def _web_server_cert_sequence(ctx: RunContext) -> list[Step]:
     """Stand up the web host's HTTP CDP/AIA + Online Responder (webServerCert,
     slice 12).
@@ -879,6 +923,8 @@ def op_sequence(op_kind: str, ctx: RunContext) -> list[Step]:
     domainLeave keeps the timed simulation stub in ``app.tasks``."""
     if op_kind == "domainJoin":
         return _domain_join_sequence(ctx)
+    if op_kind == "domainLeave":
+        return _domain_leave_sequence(ctx)
     if op_kind == "caConnect":
         return _ca_connect_sequence(ctx)
     if op_kind == "webServerCert":

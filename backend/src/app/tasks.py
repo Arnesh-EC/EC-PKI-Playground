@@ -707,9 +707,10 @@ def _run_clone_op(
         return False
 
 
-#: Op kinds whose real command sequence (core.sequences.definitions) replaces
-#: the timed stub. domainLeave has no plan sequence and stays simulated.
-_REAL_SEQUENCE_KINDS = frozenset({"domainJoin", "caConnect", "webServerCert"})
+#: Op kinds whose real command sequence replaces the timed stub.
+_REAL_SEQUENCE_KINDS = frozenset(
+    {"domainJoin", "domainLeave", "caConnect", "webServerCert"}
+)
 
 
 #: Minimum gap between elapsed-heartbeat pushes for one step (the dispatch
