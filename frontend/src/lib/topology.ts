@@ -488,17 +488,22 @@ export function findDomainForNode(
  * continues to work unchanged.
  */
 export function domainJoinEdge(source: string, target: string, staged = false): Edge {
+  const visual = edgeStyle(EDGE_TYPE.domainJoin)
   return {
     id: `e-domain-${source}-${target}`,
     source,
     target,
-    type: "smoothstep",
-    hidden: true,
+    type: "capability",
+    hidden: false,
     data: {
       edgeType: EDGE_TYPE.domainJoin,
       ports: connectionPorts(EDGE_TYPE.domainJoin),
       staged,
     },
+    ...visual,
+    style: staged
+      ? { ...visual.style, strokeDasharray: "6 4", opacity: 0.6 }
+      : visual.style,
   }
 }
 

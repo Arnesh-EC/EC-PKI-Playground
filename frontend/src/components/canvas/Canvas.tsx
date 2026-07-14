@@ -4,6 +4,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  Panel,
   type NodeChange,
   type EdgeChange,
   type Connection,
@@ -29,10 +30,13 @@ import type { StagedOp } from "@/lib/staging"
 import { EDGE_TYPE } from "@/constants/topology"
 import { findOverlappingId, isDeployed, nearestFreePosition } from "@/lib/topology"
 import { useResolvedTheme } from "@/hooks/useTheme"
+import { ConnectionLegend } from "./ConnectionLegend"
+import { CapabilityEdge } from "./edges/CapabilityEdge"
 
 const DRAG_TYPE = "application/reactflow"
 
 const nodeTypes = { machine: MachineNode }
+const edgeTypes = { capability: CapabilityEdge }
 
 /**
  * Snapshot of a drag in progress. When the dragged node is a domain
@@ -332,6 +336,7 @@ export function Canvas() {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -356,6 +361,9 @@ export function Canvas() {
         <Background gap={16} size={1} />
         <Controls />
         <MiniMap zoomable pannable nodeColor={miniMapColor} />
+        <Panel position="top-right">
+          <ConnectionLegend />
+        </Panel>
       </ReactFlow>
       <DomainConfirmDialog
         changes={pendingChanges}

@@ -426,9 +426,7 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
       target,
       sourceHandle,
       targetHandle,
-      // Web-server CDP/AIA publishing reads as a curved line; CA hierarchy
-      // and other edges keep the existing orthogonal routing.
-      type: type === EDGE_TYPE.webServerCert ? "default" : "smoothstep",
+      type: "capability",
       markerEnd: { type: "arrowclosed" as const },
       data: {
         edgeType: type,
@@ -804,7 +802,30 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
     // switch shouldn't leak sockets tied to nodes that are about to unmount.
     for (const close of activeSockets.values()) close()
     activeSockets.clear()
-    set({ nodes, edges, counters, viewport, selectedNodeId: null })
+    const hydratedEdges = edges.map((edge) => {
+      const edgeType = edge.data?.edgeType as ReturnType<typeof inferEdgeType> | undefined
+      if (!edgeType || edgeType === EDGE_TYPE.network) return edge
+      const rootIssuer = edge.data?.rootIssuer === true
+      const visual = edgeStyle(edgeType, { rootIssuer })
+      const staged = edge.data?.staged === true
+      return {
+        ...edge,
+        type: "capability",
+        hidden: false,
+        ...visual,
+        data: {
+          ...edge.data,
+          edgeType,
+          ports: connectionPorts(edgeType),
+          staged,
+          rootIssuer,
+        },
+        style: staged
+          ? { ...visual.style, strokeDasharray: "6 4", opacity: 0.6 }
+          : visual.style,
+      }
+    })
+    set({ nodes, edges: hydratedEdges, counters, viewport, selectedNodeId: null })
     // Reattach/revert any `configuring` node in the graph just loaded — this
     // is what makes an in-flight clone resume after a reload or project switch.
     get().resumeJobs()

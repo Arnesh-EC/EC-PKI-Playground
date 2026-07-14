@@ -175,6 +175,8 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
           {data.config?.caType !== "Root" && (
             <Handle
               id="hierarchy-in"
+              title="CA parent · receives CA certificate"
+              aria-label="CA parent port: receives CA certificate"
               type="target"
               position={Position.Left}
               className="!h-3 !w-3 !bg-muted-foreground/50 !border-border"
@@ -182,12 +184,16 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
           )}
           <Handle
             id="hierarchy"
+            title="CA parent · issues CA certificate"
+            aria-label="CA parent port: issues CA certificate"
             type="source"
             position={Position.Bottom}
             className="!h-3 !w-3 !bg-muted-foreground/50 !border-border"
           />
           <Handle
             id="server"
+            title="CA publication · HTTP CDP, HTTP AIA, and OCSP URL"
+            aria-label="CA publication port: HTTP CDP, HTTP AIA, and OCSP URL"
             type="source"
             position={Position.Right}
             className="!h-3 !w-3 !bg-emerald-500/60 !border-border"
@@ -198,6 +204,8 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
       {data.typeId === "webServer" &&
         isConnectable(data) && (
         <Handle
+          title="Web host · CertEnroll share, HTTP CertEnroll, Online Responder, and probe validation"
+          aria-label="Web host port: CertEnroll, Online Responder, and probe validation"
           type="target"
           position={Position.Left}
           className="!h-3 !w-3 !bg-emerald-500/60 !border-border"
