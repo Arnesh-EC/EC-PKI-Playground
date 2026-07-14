@@ -23,6 +23,8 @@ fail-fast validated below; generate each with ``openssl rand -base64 32``:
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.agent_binary import bundled_orchestrator_agent_path
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -106,11 +108,13 @@ class Settings(BaseSettings):
     #     firstboot ISO. The API hashes it during preflight; the worker bundles it.
     #   ``BACKEND_PUBLIC_URL`` — the base URL a booted guest VM dials home to
     #     (``http(s)://host:port``), baked into the agent's orchestrator.toml.
-    # Unset → the default firstboot ISO carries no agent, so it is safe on
-    # golden images whose runner predates the v2
-    # manifest. Per-template provisioning config is NOT baked here — it lives on
+    # If ORCHESTRATOR_AGENT_PATH is unset, the backend uses the repo-bundled
+    # backend/agent/pki-orchestrator.exe when present. If no bundled binary is
+    # present, the default firstboot ISO carries no agent, so it is safe on
+    # golden images whose runner predates the v2 manifest. Per-template
+    # provisioning config is NOT baked here — it lives on
     # the VM registry and is dispatched after the agent phones home.
-    orchestrator_agent_path: str | None = None
+    orchestrator_agent_path: str | None = bundled_orchestrator_agent_path()
     backend_public_url: str | None = None
 
     # How long the clone worker waits for a freshly-booted VM's agent to phone

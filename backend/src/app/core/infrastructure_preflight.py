@@ -13,7 +13,10 @@ from vmkit.esxi import get_datastore, get_vm_by_name, list_vm_names
 
 from app.core.db.models import now_ms
 from app.core.infrastructure import (
-    REQUIRED_AGENT_COMMANDS, InfrastructureProfile, PkiRole,
+    ASSUMED_TESTED_BASE_CHANGE_VERSION,
+    REQUIRED_AGENT_COMMANDS,
+    InfrastructureProfile,
+    PkiRole,
 )
 
 
@@ -220,9 +223,16 @@ def preflight_infrastructure(
             )
 
         qualification = profile.qualification
+        revision_qualified = bool(
+            qualification
+            and (
+                qualification.base_change_version == change_version
+                or qualification.base_change_version == ASSUMED_TESTED_BASE_CHANGE_VERSION
+            )
+        )
         qualification_ok = bool(
             qualification
-            and qualification.base_change_version == change_version
+            and revision_qualified
             and qualification.system_context_validated
             and qualification.time_synchronized
             and qualification.windows_updates_current

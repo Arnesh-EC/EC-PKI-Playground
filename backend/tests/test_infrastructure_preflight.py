@@ -144,6 +144,22 @@ def test_changed_image_revision_invalidates_canary_qualification(monkeypatch):
     assert check.ok is False
 
 
+def test_assumed_current_qualification_is_valid_for_dev_agent_flow(monkeypatch):
+    _patch(monkeypatch)
+    profile = _profile("rootCa")
+    profile.qualification.base_change_version = "assumed-current"
+    result = subject.preflight_infrastructure(
+        SimpleNamespace(
+            content=SimpleNamespace(about=SimpleNamespace(instanceUuid="esxi-1"))
+        ),
+        {"rootCa": profile},
+        [subject.PlannedMachine(role="rootCa", name="CA01")],
+    )
+
+    check = next(item for item in result.checks if item.key == "qualification")
+    assert check.ok is True
+
+
 def test_web_role_requires_frozen_ocsp_reference_dump(monkeypatch):
     _patch(monkeypatch)
     profile = _profile("webServer")

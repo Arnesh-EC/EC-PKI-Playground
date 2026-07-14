@@ -1,12 +1,12 @@
 """Control-plane readiness checks that must pass before ESXi cloning."""
 
-import hashlib
 from pathlib import Path
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.celery_app import celery_app
+from app.core.agent_binary import sha256_file
 from app.core.db.models import now_ms
 from app.core.infrastructure import InfrastructureProfile, PkiRole
 from app.core.jobs import transport
@@ -29,11 +29,7 @@ class EnvironmentPreflight(BaseModel):
 
 
 def _agent_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def _agent_binary_check(

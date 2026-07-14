@@ -185,17 +185,16 @@ changes after preflight, the job should fail before the first clone.
 ### Resolving an `agentBinary` preflight failure
 
 The deploy-time agent is an immutable part of image qualification, not merely
-a file-presence check. `ORCHESTRATOR_AGENT_PATH` must resolve to the same binary
-on the API and worker hosts, and its SHA-256 must equal `agentSha256` on every
-role image qualification used by the plan. The environment validation result
-reports the computed digest and each mismatched role. Re-run the canary against
-those exact golden-image revisions with that binary, then save the resulting
-qualification; do not update the digest field without repeating the canary.
-For an agent already proven with the selected images, Settings → Validate
-infrastructure exposes **Use bundled agent digest**, which records the current
-deploy-time digest across the existing role qualifications. The agent itself
-continues to be injected into each clone's first-boot ISO; it is not installed
-in the golden image.
+a file-presence check. `ORCHESTRATOR_AGENT_PATH` defaults to the repo-bundled
+`backend/agent/pki-orchestrator.exe` when present, and may be overridden when
+the API and worker hosts share a different absolute path. Its SHA-256 must equal
+`agentSha256` on every role image qualification used by the plan. The backend
+backfills that digest into saved role qualifications on startup, materializing
+the default four role profiles with an `assumed-current` qualification marker
+when no explicit qualification exists yet. That keeps the development flow to:
+replace the tested bundled binary, restart the API/worker, deploy. The agent
+itself continues to be injected into each clone's first-boot ISO; it is not
+installed in the golden image.
 
 ## Phased Delivery
 

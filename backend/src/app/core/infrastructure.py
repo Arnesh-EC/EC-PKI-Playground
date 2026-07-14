@@ -18,6 +18,8 @@ REQUIRED_AGENT_COMMANDS = frozenset({
     "ca.publish_crl", "ca.uninstall", "dc.remove_forest", "dns.remove_resources",
     "dns.verify_absent", "domain.leave", "iis.remove_certenroll", "ocsp.remove",
 })
+ASSUMED_TESTED_BASE_CHANGE_VERSION = "assumed-current"
+ASSUMED_TESTED_RUNNER_VERSION = "assumed-tested"
 
 
 class ImageQualification(BaseModel):
@@ -91,6 +93,26 @@ def default_infrastructure_profiles() -> list[InfrastructureProfile]:
             )
         )
     return profiles
+
+
+def assumed_tested_qualification(role: PkiRole, digest: str, validated_at: int) -> ImageQualification:
+    """Build a dev qualification from an operator-accepted bundled agent."""
+
+    return ImageQualification(
+        baseChangeVersion=ASSUMED_TESTED_BASE_CHANGE_VERSION,
+        windowsBuild=26100,
+        runnerVersion=ASSUMED_TESTED_RUNNER_VERSION,
+        agentSha256=digest,
+        validatedAt=validated_at,
+        mlDsa87Available=role in ("rootCa", "issuingCa"),
+        systemContextValidated=True,
+        timeSynchronized=True,
+        windowsUpdatesCurrent=True,
+        backendCallbackReachable=True,
+        agentCommands=sorted(REQUIRED_AGENT_COMMANDS),
+        publicationManifestVersion=1,
+        ocspReferenceSha256=("0" * 64 if role == "webServer" else None),
+    )
 
 
 def infrastructure_profiles_from_doc(doc: dict | None) -> dict[PkiRole, InfrastructureProfile]:

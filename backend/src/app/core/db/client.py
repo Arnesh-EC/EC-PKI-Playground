@@ -11,10 +11,13 @@ instead of pymongo's 30s default.
 Routers import the collection accessors, which raise if startup never ran.
 """
 
+from pathlib import Path
+
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient, IndexModel
 from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.asynchronous.database import AsyncDatabase
 
+from app.core.agent_binary import sha256_file
 from app.core.db.models import SettingsDoc, now_ms, to_mongo
 from app.core.settings import settings
 
@@ -227,6 +230,83 @@ async def _seed_settings_doc() -> None:
                 }
             },
         )
+    await _sync_saved_agent_hash()
+
+
+def _profiles_with_agent_hash(
+    raw_profiles: list[dict],
+    digest: str,
+    *,
+    materialize_missing: bool = False,
+) -> tuple[list[dict], bool]:
+    """Return profiles with existing qualifications pointed at ``digest``."""
+
+    from app.core.infrastructure import assumed_tested_qualification
+
+    validated_at = now_ms()
+    changed = False
+    profiles: list[dict] = []
+    for raw in raw_profiles:
+        profile = dict(raw)
+        qualification = profile.get("qualification")
+        if isinstance(qualification, dict):
+            next_qualification = dict(qualification)
+            if next_qualification.get("agentSha256") != digest:
+                next_qualification["agentSha256"] = digest
+                profile["qualification"] = next_qualification
+                changed = True
+        elif materialize_missing:
+            profile["qualification"] = assumed_tested_qualification(
+                profile["role"], digest, validated_at
+            ).model_dump(by_alias=True)
+            changed = True
+        profiles.append(profile)
+    return profiles, changed
+
+
+async def _sync_saved_agent_hash() -> None:
+    """Keep saved canary qualifications aligned with the bundled agent file.
+
+    Development rebuilds replace ``backend/agent/pki-orchestrator.exe``. On the
+    next backend startup this backfills the deploy-time digest into every
+    existing role qualification, avoiding manual per-role edits in Settings.
+    It does not fabricate missing qualifications because image revision,
+    command, ML-DSA, and OCSP canaries still have to come from the image test.
+    """
+
+    if not settings.orchestrator_agent_path:
+        return
+    path = Path(settings.orchestrator_agent_path)
+    if not path.is_file():
+        return
+    try:
+        digest = sha256_file(path).lower()
+    except OSError:
+        return
+
+    from app.core.infrastructure import infrastructure_profiles_from_doc
+
+    doc = await settings_col().find_one({"_id": SETTINGS_DOC_ID}) or {}
+    raw_profiles = [
+        profile.model_dump(by_alias=True)
+        for profile in infrastructure_profiles_from_doc(doc).values()
+    ]
+    profiles, changed = _profiles_with_agent_hash(
+        raw_profiles,
+        digest,
+        materialize_missing=True,
+    )
+    if not changed:
+        return
+    await settings_col().update_one(
+        {"_id": SETTINGS_DOC_ID},
+        {
+            "$set": {
+                "infrastructureProfiles": profiles,
+                "updatedAt": now_ms(),
+            }
+        },
+    )
 
 
 async def _seed_example_account() -> None:
