@@ -32,6 +32,7 @@ import {
 import { connectionHealthForOperation, domainJoinEdge } from "@/lib/topology"
 import { buildDeployTopology } from "@/lib/deployTopology"
 import { isCertificateJourney } from "@/lib/certificateJourney"
+import { createLabEvidence, isLabHealthReport } from "@/lib/labEvidence"
 import { openJobSocket, type OpRunState } from "@/lib/ws"
 import { useAgentsStore } from "@/store/agents"
 import { useAuthStore } from "@/store/auth"
@@ -195,7 +196,7 @@ export function prepareDeployPlan(ops = useStagingStore.getState().ops): Prepare
 }
 
 /** Folds one `plan-state` snapshot into the staging list and mirrors createVm/edge transitions onto the canvas. Idempotent — safe to apply the same snapshot more than once (reconnects/replays). */
-function applyPlanState(opsState: Record<string, OpRunState>) {
+function applyPlanState(opsState: Record<string, OpRunState>, deploymentJobId?: string) {
   const { ops, setOpState } = useStagingStore.getState()
   const topology = useTopologyStore.getState()
 
@@ -276,13 +277,21 @@ function applyPlanState(opsState: Record<string, OpRunState>) {
     }
     if (
       op.kind === OP_KIND.webServerCert &&
-      runState.status === "done" &&
       op.secondaryNodeId &&
-      isCertificateJourney(runState.result?.certificateJourney)
+      deploymentJobId &&
+      isCertificateJourney(runState.result?.certificateJourney) &&
+      isLabHealthReport(runState.result?.health)
     ) {
+      const labEvidence = createLabEvidence(
+        deploymentJobId,
+        runState.result.health,
+        runState.result.certificateJourney,
+      )
       topology.patchNodeData(op.secondaryNodeId, {
         certificateJourney: runState.result.certificateJourney,
+        labEvidence,
       })
+      topology.applyLabEvidence(labEvidence)
     }
   }
 }
@@ -318,9 +327,9 @@ function revertNonTerminalToStaged(): void {
 }
 
 /** Final reconcile once the plan job reaches `done`: apply the last snapshot, drop fully-`done` ops off the list, and reopen `cancelled` ops (skipped only because a dependency failed) as `staged` so "Retry deploy" resends them alongside the op that actually failed. */
-function finishDeploy(result: Record<string, unknown>): void {
+function finishDeploy(result: Record<string, unknown>, deploymentJobId: string): void {
   const opsResult = (result?.ops ?? {}) as Record<string, OpRunState>
-  applyPlanState(opsResult)
+  applyPlanState(opsResult, deploymentJobId)
 
   const { ops } = useStagingStore.getState()
   let errorCount = 0
@@ -363,10 +372,10 @@ function attachPlanSocket(jobId: string, token: string | null | undefined, attem
     planRetryTimer = null
   }
   planSocketClose = openJobSocket(jobId, token, {
-    onPlanState: (e) => applyPlanState(e.ops),
+    onPlanState: (e) => applyPlanState(e.ops, jobId),
     onDone: (e) => {
       planSocketClose = null
-      finishDeploy(e.result)
+      finishDeploy(e.result, jobId)
     },
     onError: (e) => {
       planSocketClose = null

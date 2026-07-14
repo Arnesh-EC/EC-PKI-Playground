@@ -29,6 +29,8 @@ import { toast } from "sonner"
 
 import { ApiError, deleteIso, deleteVm } from "@/lib/api"
 import type { CertificateJourney } from "@/lib/certificateJourney"
+import type { LabEvidence, ServiceHealth } from "@/lib/labEvidence"
+import { aggregateServiceHealth, serviceHealthForEdge } from "@/lib/labEvidence"
 import { openJobSocket } from "@/lib/ws"
 import {
   canConnectServiceSockets,
@@ -126,6 +128,8 @@ export interface MachineData extends Record<string, unknown> {
   orchestratorVmId?: string
   /** Redacted terminal verification projection used by the certificate journey lens. */
   certificateJourney?: CertificateJourney
+  /** Redacted final multi-host verification used by heatmap and evidence modes. */
+  labEvidence?: LabEvidence
 }
 
 /**
@@ -355,6 +359,8 @@ interface TopologyState {
   commitEdge: (edgeId: string) => void
   /** Persists deployment health on a typed connection. */
   setEdgeHealth: (edgeId: string, health: ConnectionHealth) => void
+  /** Projects terminal verification onto every individual service segment. */
+  applyLabEvidence: (evidence: LabEvidence) => void
   selectNode: (id: string | null) => void
   setViewport: (viewport: Viewport) => void
   setOverlapNode: (id: string | null) => void
@@ -832,6 +838,25 @@ export const useTopologyStore = create<TopologyState>()((set, get) => ({
           ? { ...edge, data: { ...edge.data, health } }
           : edge,
       ),
+    }))
+  },
+
+  applyLabEvidence(evidence) {
+    set((s) => ({
+      edges: s.edges.map((edge) => {
+        const serviceHealth: ServiceHealth = serviceHealthForEdge(edge, s.nodes, evidence)
+        if (Object.keys(serviceHealth).length === 0) return edge
+        const fallback = (edge.data?.health as ConnectionHealth | undefined) ??
+          CONNECTION_HEALTH.verified
+        return {
+          ...edge,
+          data: {
+            ...edge.data,
+            serviceHealth,
+            health: aggregateServiceHealth(serviceHealth, fallback),
+          },
+        }
+      }),
     }))
   },
 
