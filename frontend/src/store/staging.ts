@@ -105,10 +105,30 @@ interface StageOpInput {
   edgeId?: string
 }
 
+/**
+ * Where an in-flight plan is before per-op progress exists: `posting` while
+ * the deploy POST (route-side compile + preflight) is in flight, `queued`
+ * once accepted but not yet picked up by a worker, `preparing` while the
+ * worker runs its setup (connection, preflight re-verify), and `executing`
+ * from the first plan-state frame on. Null when no plan is in flight.
+ */
+export type PlanPhase = "posting" | "queued" | "preparing" | "executing"
+
+/** True while the plan has produced no per-op progress yet — the stretch the deploy button narrates instead of counting ops. */
+export function isPreExecutionPhase(phase: PlanPhase | null): boolean {
+  return phase === "posting" || phase === "queued" || phase === "preparing"
+}
+
 interface StagingState {
   ops: StagedOp[]
   deployJobId: string | null
   deploying: boolean
+  /** Pre-execution position of the in-flight plan; null when idle or unknown (e.g. resumed jobs until the stream says otherwise). */
+  planPhase: PlanPhase | null
+  /** Worker setup breadcrumb (`planSetup` progress frames) shown verbatim during `preparing`. */
+  planPhaseDetail: string | null
+  /** Epoch ms of the Deploy click, for the elapsed-time escalation in the panel. Null on resumed jobs. */
+  deployStartedAt: number | null
 
   stageOp: (input: StageOpInput) => StagedOp
   /** Pops the last op and reverts it. No-op while deploying or when empty — the last op never has dependents, so this is always safe. */
@@ -487,7 +507,14 @@ function revertNonTerminalToStaged(): void {
     remaining.push({ ...op, status: OP_STATUS.staged, progress: undefined, detail: undefined })
   }
 
-  useStagingStore.setState({ ops: remaining, deployJobId: null, deploying: false })
+  useStagingStore.setState({
+    ops: remaining,
+    deployJobId: null,
+    deploying: false,
+    planPhase: null,
+    planPhaseDetail: null,
+    deployStartedAt: null,
+  })
 }
 
 /** Final reconcile once the plan job reaches `done`: apply the last snapshot, drop fully-`done` ops off the list, and reopen `cancelled` ops (skipped only because a dependency failed) as `staged` so "Retry deploy" resends them alongside the op that actually failed. Exported for tests. */
@@ -517,13 +544,28 @@ export function finishDeploy(result: Record<string, unknown>, deploymentJobId: s
     )
   }
 
-  useStagingStore.setState({ ops: remaining, deployJobId: null, deploying: false })
+  useStagingStore.setState({
+    ops: remaining,
+    deployJobId: null,
+    deploying: false,
+    planPhase: null,
+    planPhaseDetail: null,
+    deployStartedAt: null,
+  })
 
   if (errorCount > 0) {
     toast.error(`Deploy finished with ${errorCount} failed operation${errorCount === 1 ? "" : "s"}.`)
   } else {
     toast.success("Deploy complete.")
   }
+}
+
+/** Advances the pre-execution phase; ignored once the plan is executing (late `queued` replays from a reconnect must not walk the label backwards). */
+function setPlanPhase(phase: PlanPhase, detail: string | null = null): void {
+  useStagingStore.setState((s) => {
+    if (!s.deploying || s.planPhase === "executing") return s
+    return { planPhase: phase, planPhaseDetail: detail }
+  })
 }
 
 // Single in-flight plan socket — a project only ever has one active deploy.
@@ -544,7 +586,17 @@ function attachPlanSocket(jobId: string, token: string | null | undefined, attem
     planRetryTimer = null
   }
   planSocketClose = openJobSocket(jobId, token, {
-    onPlanState: (e) => applyPlanState(e.ops, jobId),
+    onQueued: () => setPlanPhase("queued"),
+    // The worker's setup breadcrumbs ride as `planSetup` progress frames
+    // between `queued` and `running` — any other progress key is not ours.
+    onProgress: (e) => {
+      if (e.key === "planSetup") setPlanPhase("preparing", e.phase)
+    },
+    onRunning: () => setPlanPhase("preparing"),
+    onPlanState: (e) => {
+      setPlanPhase("executing")
+      applyPlanState(e.ops, jobId)
+    },
     onDone: (e) => {
       planSocketClose = null
       finishDeploy(e.result, jobId)
@@ -572,6 +624,9 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
   ops: [],
   deployJobId: null,
   deploying: false,
+  planPhase: null,
+  planPhaseDetail: null,
+  deployStartedAt: null,
 
   stageOp(input) {
     const { ops, deploying } = get()
@@ -630,7 +685,14 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
       clearTimeout(planRetryTimer)
       planRetryTimer = null
     }
-    set({ ops: sanitizeOps(ops), deployJobId, deploying: false })
+    set({
+      ops: sanitizeOps(ops),
+      deployJobId,
+      deploying: false,
+      planPhase: null,
+      planPhaseDetail: null,
+      deployStartedAt: null,
+    })
     get().resumePlanJob()
   },
 
@@ -654,7 +716,12 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
     // between click and the 202 response where a second click could enqueue
     // a duplicate plan (double real clone → VmExists) and undo/stage/canvas
     // edits were still allowed on an in-flight plan.
-    set({ deploying: true })
+    set({
+      deploying: true,
+      planPhase: "posting",
+      planPhaseDetail: null,
+      deployStartedAt: Date.now(),
+    })
 
     const token = useAuthStore.getState().token
 
@@ -677,13 +744,16 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
 
     deployPlan(prepared.payload, prepared.topology, prepared.projectId)
       .then(({ job_id }) => {
-        set({ deployJobId: job_id })
+        set({ deployJobId: job_id, planPhase: "queued" })
         attachPlanSocket(job_id, token)
       })
       .catch((err) => {
         set((s) => ({
           ops: s.ops.map((op) => ({ ...op, status: OP_STATUS.staged })),
           deploying: false,
+          planPhase: null,
+          planPhaseDetail: null,
+          deployStartedAt: null,
         }))
         toast.error(err instanceof Error ? err.message : "Failed to start deploy.")
       })
