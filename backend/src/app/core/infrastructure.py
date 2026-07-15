@@ -66,10 +66,10 @@ class InfrastructureProfile(BaseModel):
 
 
 _DEFAULT_SIZING: dict[PkiRole, tuple[int, int, int]] = {
-    "domainController": (2, 4096, 60),
-    "rootCa": (2, 4096, 60),
-    "issuingCa": (4, 8192, 80),
-    "webServer": (4, 8192, 80),
+    "domainController": (8, 8192, 60),
+    "rootCa": (8, 8192, 60),
+    "issuingCa": (8, 8192, 80),
+    "webServer": (8, 8192, 80),
 }
 
 

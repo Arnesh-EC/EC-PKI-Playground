@@ -15,12 +15,15 @@
 import { useEffect } from "react"
 
 import { LIFECYCLE } from "@/constants/topology"
+import { nodeAwaitingRealization } from "@/lib/staging"
 import { useAgentsStore } from "@/store/agents"
+import { useStagingStore } from "@/store/staging"
 import { useTopologyStore } from "@/store/topology"
 
 export function useAgentPromotion(): void {
   const onlineVmIds = useAgentsStore((s) => s.onlineVmIds)
   const nodes = useTopologyStore((s) => s.nodes)
+  const ops = useStagingStore((s) => s.ops)
 
   useEffect(() => {
     if (onlineVmIds.length === 0) return
@@ -30,10 +33,14 @@ export function useAgentPromotion(): void {
       if (
         n.data.lifecycle === LIFECYCLE.provisioning &&
         n.data.orchestratorVmId &&
-        online.has(n.data.orchestratorVmId)
+        online.has(n.data.orchestratorVmId) &&
+        // Presence proves the VM booted, not that its role landed — while the
+        // node's provision/realization ops are unresolved, the plan stream
+        // (`applyPlanState`) owns the lifecycle.
+        !nodeAwaitingRealization(ops, n.id)
       ) {
         promoteProvisioned(n.id)
       }
     }
-  }, [onlineVmIds, nodes])
+  }, [onlineVmIds, nodes, ops])
 }

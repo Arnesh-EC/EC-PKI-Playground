@@ -213,6 +213,204 @@ test("finishDeploy retains a done parent whose provision sibling failed", () => 
   expect(ops[1].status).toBe(lib.OP_STATUS.error)
 })
 
+function issuingCaScenario() {
+  useTopologyStore.setState({
+    nodes: [
+      {
+        id: "node-ca2",
+        type: "machine",
+        position: { x: 0, y: 0 },
+        data: {
+          name: "ca02",
+          typeId: "certificateAuthority",
+          lifecycle: LIFECYCLE.staged,
+          config: { caType: "Issuing" },
+          poweredOn: false,
+        },
+      },
+      {
+        id: "node-web",
+        type: "machine",
+        position: { x: 0, y: 0 },
+        data: {
+          name: "srv01",
+          typeId: "webServer",
+          lifecycle: LIFECYCLE.staged,
+          config: {},
+          poweredOn: false,
+        },
+      },
+    ],
+    edges: [],
+  })
+  staging.useStagingStore.setState({
+    ops: [
+      {
+        id: "op-ca2",
+        kind: lib.OP_KIND.createVm,
+        targetNodeId: "node-ca2",
+        params: {},
+        dependsOn: [],
+        label: "Create ca02",
+        status: lib.OP_STATUS.pending,
+      },
+      {
+        id: "op-web",
+        kind: lib.OP_KIND.createVm,
+        targetNodeId: "node-web",
+        params: {},
+        dependsOn: [],
+        label: "Create srv01",
+        status: lib.OP_STATUS.pending,
+      },
+      {
+        id: "op-join",
+        kind: lib.OP_KIND.domainJoin,
+        targetNodeId: "node-ca2",
+        secondaryNodeId: "node-dc",
+        params: {},
+        dependsOn: ["op-ca2"],
+        label: "Join ca02 to encon.pki",
+        status: lib.OP_STATUS.pending,
+      },
+      {
+        id: "op-connect",
+        kind: lib.OP_KIND.caConnect,
+        targetNodeId: "node-ca2",
+        secondaryNodeId: "node-ca1",
+        params: {},
+        dependsOn: ["op-ca2"],
+        label: "Connect ca02 to ca01",
+        status: lib.OP_STATUS.pending,
+      },
+      {
+        id: "op-cert",
+        kind: lib.OP_KIND.webServerCert,
+        targetNodeId: "node-ca2",
+        secondaryNodeId: "node-web",
+        params: {},
+        dependsOn: ["op-ca2", "op-web"],
+        label: "Issue srv01 certificate",
+        status: lib.OP_STATUS.pending,
+      },
+    ],
+    deployJobId: "job1",
+    deploying: true,
+  })
+}
+
+function nodeById(id: string) {
+  return useTopologyStore.getState().nodes.find((n) => n.id === id)!
+}
+
+const CA2_SETTLED: Record<string, OpRunState> = {
+  "op-ca2": { status: "done", result: { vmName: "guest-ca02", ip: "10.0.0.6" } },
+  "op-ca2::provision": { status: "done", result: { vmName: "guest-ca02" } },
+}
+
+test("a boot-settled node stays provisioning while its realization ops run", () => {
+  issuingCaScenario()
+  staging.applyPlanState(
+    { ...CA2_SETTLED, "op-join": { status: "running", percent: 10 } },
+    "job1",
+  )
+
+  expect(nodeById("node-ca2").data.lifecycle).toBe(LIFECYCLE.provisioning)
+})
+
+test("cancelled realization ops mark a boot-settled node failed as blocked", () => {
+  issuingCaScenario()
+  staging.applyPlanState(
+    {
+      ...CA2_SETTLED,
+      "op-join": {
+        status: "cancelled",
+        detail: "Skipped: a dependency failed or was cancelled.",
+      },
+      "op-connect": {
+        status: "cancelled",
+        detail: "Skipped: a dependency failed or was cancelled.",
+      },
+    },
+    "job1",
+  )
+
+  const data = nodeById("node-ca2").data
+  expect(data.lifecycle).toBe(LIFECYCLE.failed)
+  expect(data.errorDetail).toBe(
+    "Blocked: domain join, CA connection cancelled because an upstream dependency failed.",
+  )
+  expect(data.vmName).toBe("guest-ca02")
+})
+
+test("a failed realization op surfaces its detail on the node", () => {
+  issuingCaScenario()
+  staging.applyPlanState(
+    {
+      ...CA2_SETTLED,
+      "op-join": { status: "error", detail: "domain join timed out" },
+    },
+    "job1",
+  )
+
+  const data = nodeById("node-ca2").data
+  expect(data.lifecycle).toBe(LIFECYCLE.failed)
+  expect(data.errorDetail).toBe("domain join timed out")
+})
+
+test("the node deploys only once every realization op is done", () => {
+  issuingCaScenario()
+  staging.applyPlanState(
+    {
+      ...CA2_SETTLED,
+      "op-join": { status: "done" },
+      "op-connect": { status: "done" },
+      "op-cert": { status: "done" },
+    },
+    "job1",
+  )
+
+  expect(nodeById("node-ca2").data.lifecycle).toBe(LIFECYCLE.deployed)
+})
+
+test("a web host is gated by the webServerCert op that realizes it", () => {
+  issuingCaScenario()
+  staging.applyPlanState(
+    {
+      "op-web": { status: "done", result: { vmName: "guest-srv01" } },
+      "op-web::provision": { status: "done", result: { vmName: "guest-srv01" } },
+      "op-cert": {
+        status: "cancelled",
+        detail: "Skipped: a dependency failed or was cancelled.",
+      },
+    },
+    "job1",
+  )
+
+  const data = nodeById("node-web").data
+  expect(data.lifecycle).toBe(LIFECYCLE.failed)
+  expect(data.errorDetail).toBe(
+    "Blocked: web server certificate cancelled because an upstream dependency failed.",
+  )
+})
+
+test("nodeAwaitingRealization gates agent-presence promotion", () => {
+  issuingCaScenario()
+  const ops = staging.useStagingStore.getState().ops.map((op) =>
+    op.id === "op-join"
+      ? { ...op, status: lib.OP_STATUS.running }
+      : { ...op, status: lib.OP_STATUS.done },
+  )
+
+  expect(lib.nodeAwaitingRealization(ops, "node-ca2")).toBe(true)
+  expect(
+    lib.nodeAwaitingRealization(
+      ops.map((op) => ({ ...op, status: lib.OP_STATUS.done })),
+      "node-ca2",
+    ),
+  ).toBe(false)
+})
+
 test("finishDeploy drops synthetic rows alongside their successful parents", () => {
   staging.applyPlanState({ "op-dc::provision": { status: "pending" } }, "job1")
 

@@ -54,10 +54,10 @@ const ROLE_LABELS = {
 } as const
 
 const DEFAULT_PROFILES: InfrastructureProfile[] = [
-  ["domainController", 2, 4096, 60],
-  ["rootCa", 2, 4096, 60],
-  ["issuingCa", 4, 8192, 80],
-  ["webServer", 4, 8192, 80],
+  ["domainController", 8, 8192, 60],
+  ["rootCa", 8, 8192, 60],
+  ["issuingCa", 8, 8192, 80],
+  ["webServer", 8, 8192, 80],
 ].map(([role, cpus, memoryMb, systemDiskGb]) => ({
   role: role as InfrastructureProfile["role"],
   base: "ws-2025-base",

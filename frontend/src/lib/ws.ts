@@ -42,6 +42,8 @@ export interface OpRunState {
   percent?: number
   phase?: string
   detail?: string
+  /** Python traceback for unexpected failures — collapsible technical detail. */
+  trace?: string
   result?: Record<string, unknown>
   steps?: Record<string, StepRunState>
 }

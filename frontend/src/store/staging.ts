@@ -28,8 +28,10 @@ import {
 import {
   OP_KIND,
   OP_STATUS,
+  blockedRealizationDetail,
   inferDependsOn,
   isProvisionOpId,
+  nodeRealizationOps,
   provisionParentId,
   sanitizeOps,
   transitiveDependents,
@@ -334,6 +336,7 @@ export function applyPlanState(opsState: Record<string, OpRunState>, deploymentJ
       progress: runState.percent,
       phase: runState.status === "running" ? runState.phase : undefined,
       detail: runState.detail,
+      trace: runState.trace,
       executionSteps: runState.steps
         ? Object.fromEntries(Object.entries(runState.steps).map(([id, step]) => [
             id,
@@ -361,19 +364,66 @@ export function applyPlanState(opsState: Record<string, OpRunState>, deploymentJ
         })
       } else if (runState.status === "done") {
         const result = runState.result
-        topology.patchNodeData(op.targetNodeId, {
-          lifecycle: LIFECYCLE.deployed,
+        // Conditional spreads so a result-less replay of an older snapshot
+        // can never clobber an already-recorded identity with undefined.
+        const identity = {
           poweredOn: true,
-          progress: 100,
-          phase: undefined,
-          // Conditional spreads so a result-less replay of an older snapshot
-          // can never clobber an already-recorded identity with undefined.
           ...(typeof result?.ip === "string" ? { ip: result.ip } : {}),
           ...(typeof result?.vmName === "string" ? { vmName: result.vmName } : {}),
           ...(typeof result?.agentVmId === "string"
             ? { orchestratorVmId: result.agentVmId }
             : {}),
-        })
+        }
+        // Boot-settle alone doesn't make the node functional — its role
+        // standup lives in the relationship ops (caConnect/domainJoin/
+        // webServerCert). Reading statuses straight from the whole-state
+        // snapshot keeps this fold idempotent: every frame re-decides the
+        // lifecycle from scratch.
+        const realization = nodeRealizationOps(ops, op.targetNodeId)
+        const erroredOp = realization.find(
+          (r) => opsState[r.id]?.status === "error",
+        )
+        const cancelledOps = realization.filter(
+          (r) => opsState[r.id]?.status === "cancelled",
+        )
+        if (erroredOp) {
+          topology.patchNodeData(op.targetNodeId, {
+            lifecycle: LIFECYCLE.failed,
+            progress: undefined,
+            phase: undefined,
+            errorDetail: opsState[erroredOp.id]?.detail || "Deployment failed",
+            ...identity,
+          })
+        } else if (cancelledOps.length > 0) {
+          // The node's own VM is fine, but an upstream failure cancelled the
+          // ops that would make it a functioning PKI member — surface that as
+          // `failed` rather than a lying green badge.
+          topology.patchNodeData(op.targetNodeId, {
+            lifecycle: LIFECYCLE.failed,
+            progress: undefined,
+            phase: undefined,
+            errorDetail: blockedRealizationDetail(cancelledOps),
+            ...identity,
+          })
+        } else if (
+          realization.every((r) => opsState[r.id]?.status === "done")
+        ) {
+          topology.patchNodeData(op.targetNodeId, {
+            lifecycle: LIFECYCLE.deployed,
+            progress: 100,
+            phase: undefined,
+            ...identity,
+          })
+        } else {
+          // Realization ops still pending/running — VM up, role not yet
+          // installed. Hold `provisioning`; a later snapshot finishes the job.
+          topology.patchNodeData(op.targetNodeId, {
+            lifecycle: LIFECYCLE.provisioning,
+            progress: 100,
+            phase: undefined,
+            ...identity,
+          })
+        }
       } else if (runState.status === "error") {
         topology.patchNodeData(op.targetNodeId, {
           lifecycle: LIFECYCLE.failed,

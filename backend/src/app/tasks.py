@@ -25,6 +25,7 @@ short-lived sync client per task (``core.db.sync.worker_db``).
 
 import logging
 import time
+import traceback
 import uuid
 import datetime
 from dataclasses import asdict
@@ -117,20 +118,23 @@ def _live_worker_connection(conn):
 if TYPE_CHECKING:
     from vmkit import Connection
 
+    from app.core.infrastructure import InfrastructureProfile
     from app.core.topology import TopologyDocument
     from app.routers.deploy import PlanOp
 
 #: Server-side mirror of the frontend's STANDALONE_CLONE (constants/templates.ts /
 #: the pre-staging topology.ts) — the backend does not accept arbitrary hardware
-#: params from the client, only the per-VM name.
-def _plan_clone_defaults(config: GoldenImageConfig) -> dict:
+#: params from the client, only the per-VM name. Sizing is resolved server-side
+#: from the operator's per-role InfrastructureProfile when one is passed; the
+#: bare GoldenImageConfig fallback carries no sizing fields.
+def _plan_clone_defaults(config: "GoldenImageConfig | InfrastructureProfile") -> dict:
     return {
         "base": config.base,
         "datastore": config.datastore,
         "guest_os": config.expected_guest_os,
         "max_usage_pct": config.max_usage_pct,
-        "cpus": 2,
-        "mem_mb": 4096,
+        "cpus": getattr(config, "cpus", None) or 8,
+        "mem_mb": getattr(config, "memory_mb", None) or 8192,
     }
 
 #: Three named phases per simulated op kind, ticked at a fixed cadence.
@@ -595,7 +599,7 @@ def _run_provision_op(
         _set_provision_state(conn_db, vm_name, "failed")
         detail = str(exc)
         state[op.id] = OpRunState(
-            status="error", detail=detail,
+            status="error", detail=detail, trace=traceback.format_exc(),
             steps=_fail_running_visible_step(state, op.id, detail),
         )
         push()
@@ -629,7 +633,7 @@ def _run_clone_op(
     state: dict[str, OpRunState],
     push,
     owner_role: str = "guest",
-    image_config: GoldenImageConfig | None = None,
+    image_config: "GoldenImageConfig | InfrastructureProfile | None" = None,
 ) -> bool:
     """Execute a ``createVm`` op for real, from one of three ISO sources:
 
@@ -876,7 +880,7 @@ def _run_clone_op(
         _cleanup_failed_clone(conn, db, vm_name, ip)
         detail = str(exc)
         state[op.id] = OpRunState(
-            status="error", detail=detail,
+            status="error", detail=detail, trace=traceback.format_exc(),
             steps=_fail_running_visible_step(state, op.id, detail),
         )
         push()

@@ -535,9 +535,17 @@ export function Inspector() {
   const isStaged = data.lifecycle === LIFECYCLE.staged
   const isFailed = data.lifecycle === LIFECYCLE.failed
   const isDestroying = data.lifecycle === LIFECYCLE.destroying
+  // Any errored op that deploys or realizes this node — clone, provision, or
+  // relationship (webServerCert realizes its `secondary` web host). Blocked
+  // nodes have no errored op of their own; `data.errorDetail` carries the
+  // "Blocked: …" text applyPlanState wrote.
   const failedOp = ops.find(
-    (op) => op.kind === OP_KIND.createVm && op.targetNodeId === nodeId && op.status === OP_STATUS.error,
+    (op) =>
+      op.status === OP_STATUS.error &&
+      (op.targetNodeId === nodeId ||
+        (op.kind === OP_KIND.webServerCert && op.secondaryNodeId === nodeId)),
   )
+  const failedDetail = failedOp?.detail ?? data.errorDetail
 
   const tier =
     data.typeId === "certificateAuthority" ? caTier(nodeId, edges) : null
@@ -839,15 +847,26 @@ export function Inspector() {
           </section>
         )}
 
-        {/* Failed — the createVm op errored out; offer the same retry the Staged panel exposes */}
+        {/* Failed — an op deploying/realizing this node errored (or was blocked
+            by an upstream failure); offer the same retry the Staged panel exposes */}
         {isFailed && (
           <section className="flex flex-col gap-2">
             <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/5 p-2 text-xs text-red-600">
               <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
               <div className="flex flex-col gap-1">
                 <span>Deploy failed.</span>
-                {failedOp?.detail && (
-                  <span className="text-[11px] text-muted-foreground">{failedOp.detail}</span>
+                {failedDetail && (
+                  <span className="text-[11px] text-muted-foreground">{failedDetail}</span>
+                )}
+                {failedOp?.trace && (
+                  <details>
+                    <summary className="cursor-pointer text-[10px] font-medium text-muted-foreground">
+                      Technical details
+                    </summary>
+                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/40 p-1.5 text-[9px] leading-snug text-muted-foreground">
+                      {failedOp.trace}
+                    </pre>
+                  </details>
                 )}
               </div>
             </div>

@@ -55,6 +55,10 @@ class OpRunState(BaseModel):
     percent: float | None = None
     phase: str | None = None
     detail: str | None = None
+    #: Python traceback for unexpected failures — populated only on generic
+    #: exceptions (typed vmkit/sequence errors keep their mapped one-liner in
+    #: ``detail``). Rendered as collapsible technical detail in the UI.
+    trace: str | None = None
     result: dict[str, Any] | None = None
     steps: dict[str, StepRunState] = Field(default_factory=dict)
 

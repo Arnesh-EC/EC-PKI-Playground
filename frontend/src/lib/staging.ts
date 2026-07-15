@@ -57,6 +57,8 @@ export interface StagedOp extends Record<string, unknown> {
   phase?: string
   /** Error detail after a failed deploy. */
   detail?: string
+  /** Backend traceback for unexpected failures — collapsible technical detail. */
+  trace?: string
   /** Backend-authored child execution states, keyed by compiled step id. */
   executionSteps?: Record<string, {
     status: OpStatus
@@ -118,6 +120,61 @@ export function sanitizeOps(ops: StagedOp[]): StagedOp[] {
     }
   }
   return kept
+}
+
+/** Human noun per realization op kind, for blocked-node messaging. */
+const REALIZATION_LABELS: Partial<Record<OpKind, string>> = {
+  [OP_KIND.domainJoin]: "domain join",
+  [OP_KIND.domainLeave]: "domain leave",
+  [OP_KIND.caConnect]: "CA connection",
+  [OP_KIND.webServerCert]: "web server certificate",
+}
+
+/**
+ * The relationship ops that must succeed before `nodeId` counts as deployed,
+ * beyond its own clone + provision. After the clone/provision split the
+ * synthesized provision op is only agent phone-home + boot settle for some
+ * roles — the actual role standup lives in these ops (an issuing CA is stood
+ * up by its caConnect, a web host by its domainJoin + webServerCert).
+ * webServerCert targets the issuing CA but realizes its `secondary` web host;
+ * a CA is never gated by its consumers.
+ */
+export function nodeRealizationOps(ops: StagedOp[], nodeId: string): StagedOp[] {
+  return ops.filter(
+    (op) =>
+      ((op.kind === OP_KIND.domainJoin ||
+        op.kind === OP_KIND.domainLeave ||
+        op.kind === OP_KIND.caConnect) &&
+        op.targetNodeId === nodeId) ||
+      (op.kind === OP_KIND.webServerCert && op.secondaryNodeId === nodeId),
+  )
+}
+
+/**
+ * True while `nodeId` still has plan work in flight (or terminally failed/
+ * cancelled) that gates its `deployed` promotion — its synthesized provision
+ * op plus every realization op. Agent presence alone must never promote such
+ * a node (`useAgentPromotion`): the boot-settled VM may still be waiting on —
+ * or blocked from — the ops that install its actual role.
+ */
+export function nodeAwaitingRealization(ops: StagedOp[], nodeId: string): boolean {
+  const related = [
+    ...ops.filter(
+      (op) => op.kind === OP_KIND.provision && op.targetNodeId === nodeId,
+    ),
+    ...nodeRealizationOps(ops, nodeId),
+  ]
+  return related.some(
+    (op) => op.status !== OP_STATUS.done && op.status !== OP_STATUS.staged,
+  )
+}
+
+/** "Blocked: …" node detail when upstream failures cancelled realization ops. */
+export function blockedRealizationDetail(cancelled: StagedOp[]): string {
+  const kinds = [
+    ...new Set(cancelled.map((op) => REALIZATION_LABELS[op.kind] ?? op.kind)),
+  ]
+  return `Blocked: ${kinds.join(", ")} cancelled because an upstream dependency failed.`
 }
 
 /** The staged op of `kind` targeting `nodeId`, if one is still in the list. */

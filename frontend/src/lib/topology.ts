@@ -421,6 +421,22 @@ export function lintTopologyRelationships(
   edges: Edge[],
 ): TopologyGuidanceItem[] {
   const diagnostics: TopologyGuidanceItem[] = []
+
+  // Failed nodes fall out of every relationship check below (isConnectable
+  // excludes them), so without an explicit diagnostic a half-failed deploy
+  // reads as an almost-clean topology. Surface each one first, as an error.
+  for (const node of nodes) {
+    if (node.data.lifecycle !== LIFECYCLE.failed) continue
+    diagnostics.push({
+      code: "deployment-failed",
+      message: node.data.errorDetail
+        ? `${node.data.name} failed to deploy: ${node.data.errorDetail}`
+        : `${node.data.name} failed to deploy.`,
+      severity: "error",
+      nodeIds: [node.id],
+      edgeIds: [],
+    })
+  }
   const memberships = new Map(
     edges
       .filter((edge) => edge.data?.edgeType === EDGE_TYPE.domainJoin)

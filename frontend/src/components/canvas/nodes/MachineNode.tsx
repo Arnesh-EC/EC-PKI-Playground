@@ -551,6 +551,16 @@ export function MachineNode({ id, data, selected }: NodeProps<Node<MachineData>>
                   <ProgressBar pct={data.progress ?? 0} />
                 </div>
               )}
+              {/* Failure reasons must be readable at a glance, not only via
+                  the header icon's hover tooltip. */}
+              {!activePhase && data.lifecycle === LIFECYCLE.failed && warning && (
+                <p
+                  className="mx-auto line-clamp-2 min-w-0 text-center text-[10px] leading-tight text-red-500"
+                  title={warning}
+                >
+                  {warning}
+                </p>
+              )}
             </div>
 
             <dl className="grid grid-cols-2 gap-4 border-t pt-2">

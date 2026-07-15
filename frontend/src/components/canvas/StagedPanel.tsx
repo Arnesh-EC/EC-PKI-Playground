@@ -79,6 +79,16 @@ function StatusGlyph({ op }: { op: StagedOp }) {
                 <p className="mt-1 text-muted-foreground">
                   {op.detail ?? "No further detail available."}
                 </p>
+                {op.trace && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-[10px] font-medium text-muted-foreground">
+                      Technical details
+                    </summary>
+                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/40 p-1.5 text-[9px] leading-snug text-muted-foreground">
+                      {op.trace}
+                    </pre>
+                  </details>
+                )}
               </Popover.Popup>
             </Popover.Positioner>
           </Popover.Portal>
@@ -380,6 +390,18 @@ export function StagedPanel() {
                         {subtitle(op, group)}
                         {op.status === OP_STATUS.running && op.phase ? ` — ${op.phase}` : null}
                       </span>
+                      {/* Failure/skip reasons render inline — the glyph popover
+                          stays, but the explanation must not hide behind a click. */}
+                      {op.status === OP_STATUS.error && op.detail && (
+                        <span className="block break-words text-[10px] leading-snug text-red-500">
+                          {op.detail}
+                        </span>
+                      )}
+                      {op.status === OP_STATUS.cancelled && (
+                        <span className="block break-words text-[10px] leading-snug text-muted-foreground/70">
+                          {op.detail ?? "Skipped: a dependency failed or was cancelled."}
+                        </span>
+                      )}
                     </span>
                     <StatusGlyph op={op} />
                     {/* Synthesized rows are read-only — they live and die with

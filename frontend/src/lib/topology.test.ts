@@ -4,6 +4,7 @@ import {
   CONNECTION_HEALTH,
   CONNECTION_PORT,
   EDGE_TYPE,
+  LIFECYCLE,
   SERVICE_SOCKET,
 } from "@/constants/topology"
 import {
@@ -157,6 +158,34 @@ describe("topology relationship linter", () => {
       "CA02 publishes HTTP CDP/AIA, but no web host is connected.",
       "SRV1 has OCSP enabled, but no issuing CA grants its enrollment templates.",
     ])
+  })
+
+  it("reports failed nodes first instead of silently dropping them", () => {
+    const failedRoot = machine("root", "CA01", "certificateAuthority", {
+      caType: "Root",
+    })
+    failedRoot.data.lifecycle = LIFECYCLE.failed
+    failedRoot.data.errorDetail =
+      "provisioning failed: agent command 'ca.install' timed out"
+    const failedDc = machine("dc", "DC01", "domainController")
+    failedDc.data.lifecycle = LIFECYCLE.failed
+
+    const diagnostics = lintTopologyRelationships(
+      [failedRoot, failedDc, ...nodes.slice(2)],
+      [relationship("parent", "root", "issuing", EDGE_TYPE.caHierarchy)],
+    )
+
+    expect(diagnostics[0]).toMatchObject({
+      code: "deployment-failed",
+      severity: "error",
+      message:
+        "CA01 failed to deploy: provisioning failed: agent command 'ca.install' timed out",
+      nodeIds: ["root"],
+    })
+    expect(diagnostics[1]).toMatchObject({
+      code: "deployment-failed",
+      message: "DC01 failed to deploy.",
+    })
   })
 
   it("reports a planned CNAME whose web target has no A record", () => {
