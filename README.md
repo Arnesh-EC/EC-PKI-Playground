@@ -1,67 +1,235 @@
-# EC-PKI-Playground
+# EC PKI Playground
 
-A web console + FastAPI backend over the VM deployment libraries — the same
-`vmkit` / `configgen` / `isokit` that back the
-[VM-Setup-Scripts](https://github.com/Arnesh-EC/VM-Setup-Scripts) CLIs. The
-libraries are consumed as **versioned git dependencies** (see
-`backend/pyproject.toml` `[tool.uv.sources]`) — this repo vendors no library
-source.
+EC PKI Playground is a browser-based lab for designing, deploying, and
+operating a Microsoft two-tier PKI on VMware ESXi. A React canvas compiles a
+topology into a dependency-aware deployment plan; FastAPI and Celery clone the
+machines, allocate addresses, drive the in-guest orchestrator, stream progress,
+and retain recovery and verification evidence.
 
-## Layout
+## Features
 
+- A drag-and-drop topology canvas with domain regions, typed PKI connections,
+  staged changes, compiler guidance, certificate-journey and evidence views.
+- Empty projects, a preconfigured PKI project template, autosave, multi-project
+  tabs, and guest-to-guest project sharing.
+- Local username/password authentication, optional OIDC SSO, and server-side
+  operator/guest capability enforcement.
+- Operator-managed ESXi, golden-image, per-role sizing, guest-network, and IP
+  pool settings, including control-plane and infrastructure preflight checks.
+- Canonical deployment-plan compilation, parallel Celery execution, live
+  WebSocket progress, cancellation, reconciliation, teardown, and downloadable
+  evidence bundles.
+- Windows provisioning sequences for AD DS/DNS, domain join and leave,
+  offline root and enterprise issuing CAs, certificate/CRL relay, IIS CDP/AIA,
+  OCSP, certificate enrollment, verification, and convergent cleanup.
+- CertSecure Manager, CBOM Secure, and CodeSign Secure Ubuntu templates.
+
+The backend consumes `vmkit`, `configgen`, and `isokit` as versioned Git
+dependencies from [VM-Setup-Scripts](https://github.com/Arnesh-EC/VM-Setup-Scripts)
+rather than vendoring their source. The Windows `pki-orchestrator.exe` is also a
+separately built deployment artifact and is intentionally not committed here.
+
+## Architecture
+
+```text
+React/Vite ──HTTP + WebSocket──> FastAPI ─────────────> MongoDB
+                                   │  │
+                                   │  └──pub/sub─────> Valkey/Redis
+                                   │                     │
+Windows guest agents ──WebSocket───┘                  Celery workers
+                                                           │
+                                                           └──> VMware ESXi
 ```
-backend/    FastAPI app over vmkit / configgen / isokit (uv, Python ≥3.14)
-frontend/   React + Vite + TypeScript console (shadcn/ui, TanStack Query)
+
+| Path | Purpose |
+| --- | --- |
+| `frontend/` | React 19, TypeScript, Vite, Tailwind, Zustand, TanStack Query, and XYFlow UI |
+| `backend/` | FastAPI API, Celery workers, Mongo persistence, topology compiler, and sequence engine |
+| `backend/agent/` | Agent configuration and optional local location for `pki-orchestrator.exe` |
+| `docs/` | Feature inventory, roadmap, and real-lab verification notes |
+
+## Prerequisites
+
+- Python 3.14 or newer and [`uv`](https://docs.astral.sh/uv/)
+- Node.js `^20.19.0` or `>=22.12.0` and `pnpm`
+- MongoDB
+- Valkey or Redis (job broker, result backend, progress bus, and agent dispatch)
+- For real deployments: a reachable VMware ESXi host, qualified Windows golden
+  images, and an address range for cloned guests
+- For guided Windows provisioning: `pki-orchestrator.exe` and a backend URL the
+  guests can reach
+
+MongoDB is required for API startup. Valkey/Redis and the Celery workers are
+required for deployment jobs, but ESXi may be configured later from the
+operator settings UI.
+
+## Local development
+
+### 1. Start MongoDB and Valkey
+
+Use existing services, or start disposable local containers:
+
+```sh
+docker run -d --name pki-mongo -p 27017:27017 \
+  -v pki-mongo-data:/data/db mongo:8
+docker run -d --name pki-valkey -p 6379:6379 valkey/valkey:8
 ```
 
-## Backend
+The default URLs already point at these ports. All database and broker settings
+can be overridden in `backend/.env`.
+
+### 2. Configure and start the API
 
 ```sh
 cd backend
-uv sync                       # pulls fastapi + the three libs (from their git tags)
-uv run uvicorn app.main:app --reload
+cp .env.example .env
+uv sync
 ```
 
-Then open http://127.0.0.1:8000/docs.
-
-Boot requires MongoDB (`MONGO_URL`) plus two secrets in the env —
-`SESSION_SECRET` and `SETTINGS_ENC_KEY` (`openssl rand -base64 32` each; see
-`backend/.env`). In login mode, provision the first account with
-`uv run create-admin <username>`; sign-in is username/password (or OIDC SSO
-via the `OIDC_*` vars), and the shared ESXi target is stored encrypted in the
-Mongo settings document — see `CLAUDE.md` for the auth model.
-
-### Endpoints
-
-| Method | Path                 | Backed by | Notes                                              |
-|--------|----------------------|-----------|----------------------------------------------------|
-| GET    | `/health`            | —         | Liveness; reports the reachable libraries.         |
-| POST   | `/generate/hostname` | configgen | `{platform, hostname}` → first-boot hostname script |
-| POST   | `/generate/network`  | configgen | `{platform, dhcp?, ip?, prefix?, ...}` → network script |
-
-Invalid input (bad hostname/IP, broken static/DHCP contract) returns **422** with the
-validator's message.
+Generate two independent values:
 
 ```sh
-curl -s -X POST localhost:8000/generate/hostname \
-  -H 'content-type: application/json' \
-  -d '{"platform":"linux","hostname":"web01"}'
+openssl rand -base64 32
+openssl rand -base64 32
 ```
 
-## Frontend
+Paste them into `backend/.env` before running any backend command:
+
+```dotenv
+SESSION_SECRET=first-generated-value
+SETTINGS_ENC_KEY=second-generated-value
+```
+
+`SETTINGS_ENC_KEY` must remain stable because it encrypts stored ESXi and
+template secrets.
+
+Bootstrap an operator, then start the API:
+
+```sh
+uv run create-admin operator
+uv run start
+```
+
+The API is available at <http://127.0.0.1:8000>, its interactive documentation
+at <http://127.0.0.1:8000/docs>, and its liveness endpoint at
+<http://127.0.0.1:8000/api/health>.
+
+By default a low-privilege `guest` / `guest-playground` account is seeded when
+it does not already exist. Change `EXAMPLE_GUEST_USERNAME` and
+`EXAMPLE_GUEST_PASSWORD`, or leave the password empty to disable seeding, for
+anything beyond local development.
+
+### 3. Start the workers
+
+In a second terminal, using the same `backend/.env`:
+
+```sh
+cd backend
+uv run worker
+```
+
+This launches two child workers:
+
+- `esxi`: prefork workers for clone, update, and destroy operations; concurrency
+  is controlled by `CLONE_CONCURRENCY` (default `3`).
+- `provision`: threaded workers for agent-driven sequences; concurrency is
+  controlled by `PROVISION_CONCURRENCY` (default `16`).
+
+For separate worker hosts, use `uv run worker-esxi` and
+`uv run worker-provision` instead. The API and every worker must use the same
+MongoDB, broker URLs, `SESSION_SECRET`, and `SETTINGS_ENC_KEY`.
+
+### 4. Start the frontend
 
 ```sh
 cd frontend
+cp .env.example .env
 pnpm install
-pnpm dev                      # http://localhost:5173
+pnpm dev
 ```
 
-The dev server proxies `/api/*` to the backend at `http://127.0.0.1:8000`
-(override with `VITE_API_TARGET`), so run the backend alongside it. Build with
-`pnpm build`, lint with `pnpm lint`.
+Open <http://localhost:5432>. Vite proxies `/api` HTTP and WebSocket traffic to
+`http://127.0.0.1:8000`; set `VITE_API_TARGET` to use another backend.
 
-## TODO (same libraries, more routes + UI)
-- `POST /vm/clone`, `POST /vm/update` over `vmkit.clone_workflow` / `update_workflow`
-  (needs ESXi connection params).
-- `POST /iso` over `isokit.build_script_iso` (accept the generated scripts, return the ISO).
-- Network-script form (the `/generate/network` route is wired in the API client already).
+## Preparing real deployments
+
+1. Sign in as an operator and open **Settings**.
+2. Configure the shared ESXi target, guest subnet, datastore/network placement,
+   and the four Windows role profiles.
+3. Qualify each golden image and run the environment/infrastructure preflights.
+4. Place the agent at `backend/agent/pki-orchestrator.exe` or set
+   `ORCHESTRATOR_AGENT_PATH` to a path readable by both API and worker hosts.
+5. Set `BACKEND_PUBLIC_URL` to the origin deployed guests use to reach the API.
+   The agent connects at `/api/orchestrator/connect`; the URL must therefore be
+   reachable from the ESXi guest network and support WebSocket upgrades.
+6. Create the preconfigured PKI project, review the compiler output, and deploy.
+
+Environment values such as `ESXI_*`, `CLONE_*`, and `GUEST_*` only seed the
+Mongo settings document when values are absent. Once seeded, the operator-edited
+document is authoritative and changes take effect without an API restart. See
+[`backend/.env.example`](backend/.env.example) for the complete configuration
+reference, including OIDC and agent timing controls.
+
+## Authentication and persistence
+
+Every user signs in; there is no anonymous mode. Requests use the backend-issued
+session token in `X-Session-Token`, while WebSockets pass it as a query
+parameter. Account disablement and role changes are checked on every request.
+
+- Operators have the complete capability set, manage users and shared
+  infrastructure settings, and store projects in MongoDB.
+- Guests receive the guided VM/deploy subset, store ordinary projects in
+  browser local storage, and can explicitly publish or accept opaque project
+  share links. Guest VM names are server-namespaced and destructive operations
+  are ownership-checked.
+
+OIDC is enabled only when all required `OIDC_*` values are present. IdP groups
+map to operator or guest roles using the configured exact-match group lists.
+
+## API surface
+
+All application routes are mounted below `/api`.
+
+| Area | Routes |
+| --- | --- |
+| Health and scripts | `/api/health`, `/api/generate/*` |
+| Sessions and users | `/api/auth/*`, `/api/admin/users` |
+| Projects and sharing | `/api/projects`, `/api/project-shares/*` |
+| Settings and preflight | `/api/settings`, `/api/settings/*/validate`, `/api/ip-pool` |
+| Direct VM operations | `/api/vm/*`, `/api/vm-registry` |
+| Plans and recovery | `/api/deploy/compile`, `/api/deploy`, reconcile, teardown, cancel, and evidence routes |
+| ISO authoring | `/api/iso/*` |
+| Agents and progress | `/api/orchestrator/*`, `/api/ws/jobs/{job_id}` |
+
+FastAPI's generated OpenAPI document is the source of truth for request and
+response schemas. Except for liveness, login/OIDC entry points, and agent
+registration/connect flows, routes require an authenticated capability.
+
+## Verification
+
+With `backend/.env` configured:
+
+```sh
+cd backend
+uv run pytest
+```
+
+Frontend checks:
+
+```sh
+cd frontend
+pnpm test
+pnpm lint
+pnpm build
+```
+
+These checks do not replace the ESXi/Windows canary. Before treating a guided
+PKI deployment as successful, follow
+[`docs/two-tier-lab-verification.md`](docs/two-tier-lab-verification.md) and
+confirm the final structured health result, OCSP/CDP/AIA retrieval, enterprise
+PKI state, and retained evidence bundle on real hardware.
+
+## Further reading
+
+- [Full two-tier PKI roadmap](docs/full-two-tier-pki-roadmap.md)
+- [Two-tier lab verification notes](docs/two-tier-lab-verification.md)
