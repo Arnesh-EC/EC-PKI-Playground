@@ -527,12 +527,34 @@ export const compileDeployPlan = (
     ...init,
   })
 
+/**
+ * The subset shared by both preflight report shapes (control-plane and
+ * infrastructure) that the deploy flow surfaces as a receipt: the 202
+ * carries the passed infrastructure preflight, a 409's `detail.preflight`
+ * carries whichever one failed.
+ */
+export interface DeployPreflightReceipt {
+  ready: boolean
+  checkedAt?: number
+  checks: Array<{
+    key: string
+    ok: boolean
+    detail: string
+    role?: string | null
+    datastore?: string | null
+  }>
+}
+
+export interface DeployAccepted extends JobAccepted {
+  preflight: DeployPreflightReceipt | null
+}
+
 export const deployPlan = (
   ops: PlanOpPayload[],
   topology: TopologyPayload,
   projectId?: string | null,
 ) =>
-  request<JobAccepted>(URLS.deploy.root, {
+  request<DeployAccepted>(URLS.deploy.root, {
     method: "POST",
     // The backend derives guest VM names as guest-<user>-<project>-<machine>,
     // so the active project rides along as the <project> segment (required for

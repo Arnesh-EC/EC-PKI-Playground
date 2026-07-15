@@ -19,7 +19,12 @@ import { create } from "zustand"
 import { toast } from "sonner"
 
 import { CONNECTION_HEALTH, EDGE_TYPE, LIFECYCLE, SERVICE_SOCKET } from "@/constants/topology"
-import { deployPlan, type PlanOpPayload } from "@/lib/api"
+import {
+  ApiError,
+  deployPlan,
+  type DeployPreflightReceipt,
+  type PlanOpPayload,
+} from "@/lib/api"
 import {
   OP_KIND,
   OP_STATUS,
@@ -129,6 +134,8 @@ interface StagingState {
   planPhaseDetail: string | null
   /** Epoch ms of the Deploy click, for the elapsed-time escalation in the panel. Null on resumed jobs. */
   deployStartedAt: number | null
+  /** What the last deploy attempt verified (202) or tripped over (409) — rendered as the receipt checklist. Survives the plan so the wait it explains reads as deliberate. */
+  preflightReceipt: DeployPreflightReceipt | null
 
   stageOp: (input: StageOpInput) => StagedOp
   /** Pops the last op and reverts it. No-op while deploying or when empty — the last op never has dependents, so this is always safe. */
@@ -560,6 +567,15 @@ export function finishDeploy(result: Record<string, unknown>, deploymentJobId: s
   }
 }
 
+/** Pulls the structured preflight report out of a deploy 409's `detail`, if that's what failed — the same checklist then renders with its ✗ rows. */
+function extractPreflightReceipt(err: unknown): DeployPreflightReceipt | null {
+  if (!(err instanceof ApiError) || !err.detail || typeof err.detail !== "object") {
+    return null
+  }
+  const preflight = (err.detail as { preflight?: DeployPreflightReceipt | null }).preflight
+  return Array.isArray(preflight?.checks) ? preflight : null
+}
+
 /** Advances the pre-execution phase; ignored once the plan is executing (late `queued` replays from a reconnect must not walk the label backwards). */
 function setPlanPhase(phase: PlanPhase, detail: string | null = null): void {
   useStagingStore.setState((s) => {
@@ -627,6 +643,7 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
   planPhase: null,
   planPhaseDetail: null,
   deployStartedAt: null,
+  preflightReceipt: null,
 
   stageOp(input) {
     const { ops, deploying } = get()
@@ -692,6 +709,7 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
       planPhase: null,
       planPhaseDetail: null,
       deployStartedAt: null,
+      preflightReceipt: null,
     })
     get().resumePlanJob()
   },
@@ -721,6 +739,7 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
       planPhase: "posting",
       planPhaseDetail: null,
       deployStartedAt: Date.now(),
+      preflightReceipt: null,
     })
 
     const token = useAuthStore.getState().token
@@ -743,8 +762,12 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
     set({ ops: pruned.map((op) => ({ ...op, status: OP_STATUS.pending })) })
 
     deployPlan(prepared.payload, prepared.topology, prepared.projectId)
-      .then(({ job_id }) => {
-        set({ deployJobId: job_id, planPhase: "queued" })
+      .then(({ job_id, preflight }) => {
+        set({
+          deployJobId: job_id,
+          planPhase: "queued",
+          preflightReceipt: preflight ?? null,
+        })
         attachPlanSocket(job_id, token)
       })
       .catch((err) => {
@@ -754,6 +777,7 @@ export const useStagingStore = create<StagingState>()((set, get) => ({
           planPhase: null,
           planPhaseDetail: null,
           deployStartedAt: null,
+          preflightReceipt: extractPreflightReceipt(err),
         }))
         toast.error(err instanceof Error ? err.message : "Failed to start deploy.")
       })

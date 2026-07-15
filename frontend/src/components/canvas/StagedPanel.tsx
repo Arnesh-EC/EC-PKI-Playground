@@ -35,6 +35,7 @@ import {
 } from "@/store/staging"
 import { useTopologyStore } from "@/store/topology"
 import { Button } from "@/components/ui/button"
+import { PreflightReceipt } from "./PreflightReceipt"
 import { StagedRemoveDialog } from "./StagedRemoveDialog"
 import { DeployCompilerDialog } from "./DeployCompilerDialog"
 
@@ -331,6 +332,8 @@ export function StagedPanel() {
           </ol>
         )}
       </div>
+
+      <PreflightReceipt />
 
       <div className="mt-auto flex flex-col gap-1.5 border-t p-2">
         <Button
