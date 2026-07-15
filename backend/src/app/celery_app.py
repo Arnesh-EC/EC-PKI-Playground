@@ -1,12 +1,22 @@
-"""Celery application for the clone job queue.
+"""Celery application for the deploy job queues.
 
-A separate worker process runs ``clone_vm_task`` (see ``app.tasks``); the FastAPI
-process only ever calls ``.delay(...)`` on it. Run the worker with a bounded
-``--concurrency`` (see ``Settings.clone_concurrency``) — that is the global cap on
-simultaneous clones against the shared ESXi host:
+Separate worker processes run the tasks in ``app.tasks``; the FastAPI process
+only ever calls ``.delay(...)``/``.apply_async(...)`` on them. Work is split
+across two queues with independent concurrency (``uv run worker`` launches
+both — see ``app.cli.worker``):
 
-    uv run celery -A app.celery_app:celery_app worker --concurrency=2 \
-        --prefetch-multiplier=1 --loglevel=info
+- ``esxi`` — every task that opens an ESXi connection (clones, destroys, plan
+  preflight). Its worker's ``--concurrency`` (``Settings.clone_concurrency``)
+  is the global cap on simultaneous clones against the shared ESXi host.
+- ``provision`` — everything else (post-clone provisioning, sequence ops,
+  reconciles). These mostly sleep on Valkey pub/sub waiting for agents, so the
+  cap (``Settings.provision_concurrency``) is much higher; the worker also
+  drains the legacy default ``celery`` queue so in-flight pre-split jobs
+  survive an upgrade.
+
+``run_plan_operation_v2`` is queue-routed per op by ``tasks._advance_plan``
+(createVm → esxi, everything else → provision) — the one decision
+``task_routes`` can't express.
 """
 
 from celery import Celery
@@ -33,6 +43,16 @@ celery_app.conf.update(
     # We stream all state over the Valkey pub/sub + snapshot transport, not by
     # polling AsyncResult, so just bound how long results linger.
     result_expires=3600,
+    # Everything lands on the provision queue unless routed otherwise below
+    # (or per-call, as _advance_plan does for plan operations). Nothing may
+    # ever land on a queue no worker consumes.
+    task_default_queue="provision",
+    task_routes={
+        "clone_vm": {"queue": "esxi"},
+        "destroy_vm": {"queue": "esxi"},
+        "start_plan_v2": {"queue": "esxi"},
+        "teardown_plan": {"queue": "esxi"},
+    },
 )
 
 # Import so the task is registered with this app instance.

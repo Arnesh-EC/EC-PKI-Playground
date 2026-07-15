@@ -28,6 +28,8 @@ isokit = { git = "https://github.com/Arnesh-EC/isokit.git", tag = "v0.2.0" }
 [project.scripts]
 start = "app.cli:main"
 worker = "app.cli:worker"
+worker-esxi = "app.cli:worker_esxi"
+worker-provision = "app.cli:worker_provision"
 create-admin = "app.cli:create_admin"
 
 [build-system]

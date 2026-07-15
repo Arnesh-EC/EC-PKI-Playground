@@ -91,9 +91,14 @@ class Settings(BaseSettings):
     valkey_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str | None = "redis://localhost:6379/2"
-    # Intended `celery worker --concurrency=N`; not enforced here, just documents
-    # the global cap the deploy should run with.
-    clone_concurrency: int = 2
+    # Per-queue worker concurrency, consumed by the `uv run worker` launcher
+    # (app.cli.worker). clone_concurrency caps the esxi queue — the global
+    # ceiling on simultaneous clones against the shared ESXi host.
+    # provision_concurrency caps the provision queue, whose ops mostly sleep
+    # on Valkey pub/sub waiting for guest agents, so it runs a threads pool
+    # and can be far higher.
+    clone_concurrency: int = 3
+    provision_concurrency: int = 16
     # MongoDB — system of record for projects, the VM registry, the settings
     # document, and users. Reachability is checked at startup in the app
     # lifespan (fail-fast ping), not here — a URL default always parses.

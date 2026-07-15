@@ -1,20 +1,98 @@
 import argparse
 import getpass
+import multiprocessing
 import sys
+import time
 
 import uvicorn
-
-from app.celery_app import celery_app
 
 
 def main() -> None:
     uvicorn.run("app.main:app", reload=True)
 
 
+def _esxi_worker_argv() -> list[str]:
+    """Heavy blocking pyVmomi/isokit work — prefork, capped at the global
+    simultaneous-clone ceiling for the shared ESXi host."""
+    from app.core.settings import settings
+
+    return [
+        "worker", "-E",
+        "-Q", "esxi",
+        "-n", "esxi@%h",
+        "--pool=prefork",
+        f"--concurrency={settings.clone_concurrency}",
+        "--prefetch-multiplier=1",
+    ]
+
+
+def _provision_worker_argv() -> list[str]:
+    """Provision/sequence ops mostly sleep on Valkey pub/sub — threads pool,
+    high cap. Also drains the legacy default ``celery`` queue so in-flight
+    pre-split jobs survive an upgrade. (If the threads pool ever misbehaves,
+    ``--pool=prefork --concurrency=8`` is a safe fallback — nothing here uses
+    soft_time_limit.)"""
+    from app.core.settings import settings
+
+    return [
+        "worker", "-E",
+        "-Q", "provision,celery",
+        "-n", "provision@%h",
+        "--pool=threads",
+        f"--concurrency={settings.provision_concurrency}",
+        "--prefetch-multiplier=1",
+    ]
+
+
+def _run_worker(argv: list[str]) -> None:
+    from app.celery_app import celery_app
+
+    celery_app.worker_main(argv=argv)
+
+
+def worker_esxi() -> None:
+    """Run only the esxi-queue worker (multi-host deploys)."""
+    _run_worker(_esxi_worker_argv())
+
+
+def worker_provision() -> None:
+    """Run only the provision-queue worker (multi-host deploys)."""
+    _run_worker(_provision_worker_argv())
+
+
 def worker() -> None:
-    celery_app.worker_main(
-        argv=["worker", "-E", "--concurrency=2", "--prefetch-multiplier=1"]
-    )
+    """One-command dev entrypoint: launch both queue workers as children.
+
+    Distinct ``-n`` nodenames avoid a collision on one host. The parent exits
+    (terminating the survivor) as soon as either child dies, so a wedged half
+    never lingers unnoticed; Ctrl-C tears both down.
+    """
+    children = [
+        multiprocessing.Process(
+            target=_run_worker, args=(_esxi_worker_argv(),), name="esxi-worker"
+        ),
+        multiprocessing.Process(
+            target=_run_worker, args=(_provision_worker_argv(),), name="provision-worker"
+        ),
+    ]
+    for child in children:
+        child.start()
+    exit_code = 0
+    try:
+        while all(child.is_alive() for child in children):
+            time.sleep(1)
+        exit_code = next(
+            (child.exitcode or 0) for child in children if not child.is_alive()
+        )
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for child in children:
+            if child.is_alive():
+                child.terminate()
+        for child in children:
+            child.join()
+    sys.exit(exit_code)
 
 
 def create_admin() -> None:
