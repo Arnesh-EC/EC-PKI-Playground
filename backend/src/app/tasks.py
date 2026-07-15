@@ -6,23 +6,27 @@ transport (``app.core.jobs.transport``). It reuses ``CloneProgressReducer`` and
 same error → status mapping the synchronous routes use.
 
 The plan coordinator validates and preflights a deploy-plan DAG, then fans every
-ready operation out as an independent Celery task. Every ``createVm`` op is a
-real vmkit clone booted from a
-per-VM firstboot ISO (``core.firstboot``) that bakes in an address claimed
-from the guest IP pool (``core.ippool``); the other op kinds are timed stubs.
-Like the clone task, each clone operation opens its own ESXi connection against the shared
-org-wide target from the Mongo settings document (``core.esxi.load_target_sync``
-— the async client is API-process-bound), so the worker needs Mongo +
-``SETTINGS_ENC_KEY``, not ``ESXI_*`` env vars. Its Mongo writes (IP
-allocation, vm_registry, scheduler state) go through one short-lived sync client per task
-(``core.db.sync.worker_db``).
+ready operation out as an independent Celery task across two queues: ``esxi``
+for ops that open an ESXi connection (clones, destroys, plan preflight — capped
+at ``Settings.clone_concurrency``) and ``provision`` for everything else
+(``Settings.provision_concurrency`` — these ops mostly sleep on Valkey
+pub/sub). Every ``createVm`` op is a real vmkit clone booted from a per-VM
+firstboot ISO (``core.firstboot``) that bakes in an address claimed from the
+guest IP pool (``core.ippool``) and ends at power-on; the agent wait, boot
+settle, and role install run as the compiler-synthesized ``provision`` sibling
+op, so a 30-minute forest install never holds an esxi slot. Op kinds without a
+real command sequence are timed stubs. Each clone operation opens its own ESXi
+connection against the shared org-wide target from the Mongo settings document
+(``core.esxi.load_target_sync`` — the async client is API-process-bound), so
+the worker needs Mongo + ``SETTINGS_ENC_KEY``, not ``ESXI_*`` env vars. Its
+Mongo writes (IP allocation, vm_registry, scheduler state) go through one
+short-lived sync client per task (``core.db.sync.worker_db``).
 """
 
 import logging
 import time
 import uuid
 import datetime
-from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -403,27 +407,32 @@ def _plan_domain_facts(
     return None, None
 
 
-def _provision_cloned_vm(
+def _run_provision_op(
     conn_db,
     op: "PlanOp",
     ops: list["PlanOp"],
-    vm_id: str,
-    ip: str | None,
     job_id: str,
     owner_role: str,
     state: dict[str, OpRunState],
     push,
     topology: "TopologyDocument | None" = None,
 ) -> bool:
-    """Run a freshly-cloned VM's per-template provision sequence.
+    """Run a cloned VM's post-clone provisioning as its own plan op.
 
-    Waits for the baked-in agent to phone home, then walks the template's
-    provision steps through the agentbus dispatch bridge (reboots + verify
-    handled by the engine). Flips ``provisionState`` applied/failed and returns
-    whether it succeeded. An empty sequence (nothing to self-provision on first
-    boot — e.g. a member server or an issuing CA) still waits for phone-home —
-    the op must never read ``done`` while the orchestrator has yet to connect,
-    and later cross-node ops assume every clone in the plan has a live agent."""
+    The op is backend-synthesized (id ``{createVmOpId}::provision``) and
+    carries no params — everything (vmName, template, config) is resolved from
+    the sibling ``createVm`` op, which the plan validator already namespaced
+    and base-name-guarded. Waits for the baked-in agent to phone home, then
+    walks the template's provision steps through the agentbus dispatch bridge
+    (reboots + verify handled by the engine). Flips ``provisionState``
+    applied/failed. A clone with no minted agent (authored ISO / bundling off)
+    has nothing to provision and converges to done immediately. Never opens an
+    ESXi connection — that keeps the esxi queue's concurrency cap meaningful.
+    An empty sequence (nothing to install — e.g. a member server) still waits
+    for phone-home — the op must never read ``done`` while the orchestrator
+    has yet to connect, and later cross-node ops assume every clone in the
+    plan has a live agent. A provisioning failure fails the op (dependents
+    cancel) but leaves the booted VM registered and teardownable."""
     from app.core import agentbus
     from app.core.firstboot import hostname_for
     from app.core.sequences import (
@@ -433,17 +442,49 @@ def _provision_cloned_vm(
     from app.core.sequences.definitions import provision_steps
     from app.core.sequences.worker import run_op_sequence
     from app.core.template_config import extract_template_config
+    from app.core.topology import PROVISION_SUFFIX
 
-    template = op.params["template"]
+    create_op = next(
+        (item for item in ops if item.id == op.id.removesuffix(PROVISION_SUFFIX)),
+        None,
+    )
+    if create_op is None:
+        state[op.id] = OpRunState(
+            status="error",
+            detail="Provision op has no sibling createVm in the plan.",
+        )
+        push()
+        return False
+
+    vm_name = create_op.params["vmName"]
+    registry = conn_db["vm_registry"].find_one({"vmName": vm_name}) or {}
+    vm_id = (registry.get("agent") or {}).get("vmId")
+    ip = registry.get("ip")
+    if vm_id is None:
+        for step_id, phase in (
+            ("agent-ready", "No orchestrator agent required"),
+            ("boot-settle", "No orchestrator boot wait required"),
+        ):
+            _set_visible_step(
+                state, op.id, step_id, "done", push, percent=100.0, phase=phase
+            )
+        state[op.id] = OpRunState(
+            status="done", percent=100.0, phase="No orchestrator agent required",
+            result={"vmName": vm_name, **({"ip": ip} if ip else {})},
+            steps=state[op.id].steps,
+        )
+        push()
+        return True
+
+    template = create_op.params["template"]
     dns_records = dns_records_for_context(topology)
     steps = provision_steps(
         template,
-        ca_type=op.params.get("caType"),
+        ca_type=create_op.params.get("caType"),
         node_id=op.target,
         dns_records=dns_records,
     )
 
-    vm_name = op.params["vmName"]
     _set_provision_state(conn_db, vm_name, "applying")
     # Carried on every running push so the frontend learns the agent identity
     # (and can show its presence dot) long before the op finishes.
@@ -506,7 +547,7 @@ def _provision_cloned_vm(
                 agent_vm_id=vm_id,
                 ip=ip,
                 template_id=template,
-                template_config=extract_template_config(template, op.params),
+                template_config=extract_template_config(template, create_op.params),
             )
             # Domain facts from the plan's DC op so the root CA's DSConfigDN /
             # pki URLs resolve even when the DC VM isn't up yet.
@@ -550,12 +591,33 @@ def _provision_cloned_vm(
         )
         push()
         return False
+    except Exception as exc:  # noqa: BLE001 — surface as an op-level failure, not a plan crash
+        _set_provision_state(conn_db, vm_name, "failed")
+        detail = str(exc)
+        state[op.id] = OpRunState(
+            status="error", detail=detail,
+            steps=_fail_running_visible_step(state, op.id, detail),
+        )
+        push()
+        return False
 
     logger.info(
         "op %s: provision of %s (%d steps) completed in %.1fs",
         op.id, vm_name, len(steps), time.monotonic() - op_started,
     )
     _set_provision_state(conn_db, vm_name, "applied")
+    # vmName/ip/agentVmId ride the terminal result so the frontend row (and
+    # its node) keeps identity facts even on a replayed terminal frame.
+    state[op.id] = OpRunState(
+        status="done", percent=100.0, phase="Done",
+        result={
+            "vmName": vm_name,
+            "agentVmId": vm_id,
+            **({"ip": ip} if ip else {}),
+        },
+        steps=state[op.id].steps,
+    )
+    push()
     return True
 
 
@@ -563,12 +625,10 @@ def _run_clone_op(
     conn: "Connection",
     db,
     op: "PlanOp",
-    ops: list["PlanOp"],
     job_id: str,
     state: dict[str, OpRunState],
     push,
     owner_role: str = "guest",
-    topology: "TopologyDocument | None" = None,
     image_config: GoldenImageConfig | None = None,
 ) -> bool:
     """Execute a ``createVm`` op for real, from one of three ISO sources:
@@ -592,11 +652,13 @@ def _run_clone_op(
     )
     vm_name = op.params["vmName"]
     # Golden-image guard, enforced here and not only in deploy.validate_plan:
-    # run_plan_task trusts the plan payload's vmName verbatim (no re-validation,
+    # the worker trusts the plan payload's vmName verbatim (no re-validation,
     # no re-namespacing), so a plan that skipped the current route — a stale or
     # redelivered broker task, an old-code enqueue — could otherwise clone the
     # base image onto itself (`<base>/<base>.vmdk`, src == dst) and clobber the
-    # golden template. Fail the op before any datastore write.
+    # golden template. Fail the op before any datastore write. This guard
+    # stays on the only op kind that touches the datastore — synthesized
+    # provision ops derive their vmName from this already-guarded sibling.
     if vm_name == image_config.base:
         state[op.id] = OpRunState(
             status="error",
@@ -764,37 +826,11 @@ def _run_clone_op(
             # has served its purpose (orphan sweep is the backstop).
             delete_uploaded_iso_sync(db, iso_id)
 
-        # The clone is only half the createVm op. If an agent was
-        # baked in, wait for it to phone home and run the template's provision
-        # sequence through the dispatch bridge — the op isn't `done` until the
-        # VM reaches provisionState=applied, so a dependent domainJoin genuinely
-        # runs after (e.g.) the DC is promoted. A provisioning failure fails the
-        # op (dependents cancel) but leaves the booted VM in place for teardown.
-        if vm_id is not None:
-            provisioned = _provision_cloned_vm(
-                db,
-                op,
-                ops,
-                vm_id,
-                ip,
-                job_id,
-                owner_role,
-                state,
-                push,
-                topology,
-            )
-            if not provisioned:
-                return False
-        else:
-            for step_id, phase in (
-                ("agent-ready", "No orchestrator agent required"),
-                ("boot-settle", "No orchestrator boot wait required"),
-            ):
-                _set_visible_step(
-                    state, op.id, step_id, "done", push,
-                    percent=100.0, phase=phase,
-                )
-
+        # The createVm op ends at power-on. The agent wait, boot settle, and
+        # the template's role install run as the synthesized sibling
+        # ``{op.id}::provision`` op on the provision queue (_run_provision_op),
+        # so this op releases its esxi slot the moment the VM is up — later
+        # clones in the plan never queue behind a 30-minute forest install.
         state[op.id] = OpRunState(
             status="done",
             percent=100.0,
@@ -1215,176 +1251,6 @@ def _initialize_plan_run(
     )
 
 
-@celery_app.task(name="run_plan")
-def run_plan_task(
-    job_id: str,
-    plan: dict,
-    owner_role: str = "guest",
-    preflight_snapshot: dict | None = None,
-    owner: str | None = None,
-) -> None:
-    """Walk a validated deploy-plan DAG, running each op in dependency order.
-
-    Sequential ready-set loop (Kahn-style): repeatedly pick the first remaining
-    op whose dependencies have all finished. A dependency that ended in error or
-    was itself cancelled poisons its dependents — they're marked ``cancelled``
-    and skipped rather than executed, so one failed clone doesn't take down
-    independent branches of the plan. The whole body is wrapped in one
-    try/except mirroring ``clone_vm_task``: only plan-level infrastructure
-    failures (bad payload) become a terminal ``ErrorMsg``; per-op failures —
-    including a failed ``open_connection`` attempt, caught around just that
-    call — are folded into the op's state and the plan always finishes with a
-    ``DoneMsg``. The ESXi connection (opened lazily, at most once) is closed
-    in a ``finally`` regardless of outcome.
-    """
-    from app.routers.deploy import DeployRequest, PlanOpKind
-
-    try:
-        request = DeployRequest(**plan)
-        # Defense in depth for stale/mis-routed broker messages: reconstruct
-        # the semantic DAG again instead of trusting serialized dependsOn.
-        from app.core.topology import compile_plan
-
-        ops = compile_plan(request.topology, request.ops).operations
-        state: dict[str, OpRunState] = {op.id: OpRunState(status="pending") for op in ops}
-
-        def push() -> None:
-            transport.publish(job_id, PlanStateMsg(ops=dict(state)), status=JobStatus.running)
-
-        transport.publish(job_id, RunningMsg(), status=JobStatus.running)
-        push()
-
-        remaining = list(ops)
-        finished: set[str] = set()
-        blocked: set[str] = set()
-        conn: "Connection | None" = None
-        # One sync Mongo client for the whole plan, opened when there is a
-        # createVm (IP allocation + registry writes) or a real command sequence
-        # (cross-node context resolution + plan_runs cursor) to run.
-        needs_db = any(
-            op.kind is PlanOpKind.create_vm
-            or op.kind.value in _REAL_SEQUENCE_KINDS
-            for op in ops
-        )
-        db_ctx = worker_db() if needs_db else nullcontext(None)
-
-        try:
-            with db_ctx as db:
-                if db is not None:
-                    _initialize_plan_run(
-                        db, job_id, request, owner_role, owner, preflight_snapshot
-                    )
-                    # Lazy GC for abandoned ISO uploads — piggybacks
-                    # on plan runs instead of needing a scheduler.
-                    from app.routers.iso import gc_orphan_isos
-
-                    gc_orphan_isos(db)
-                    _sweep_stale_agents_sync(db)
-                image_config = None
-                if any(op.kind is PlanOpKind.create_vm for op in ops):
-                    conn = _live_worker_connection(conn)
-                    image_config = _verify_worker_infrastructure_preflight(
-                        conn, db, ops, preflight_snapshot
-                    )
-                while remaining:
-                    cancel_mode = transport.cancel_mode(job_id)
-                    if cancel_mode:
-                        for pending in remaining:
-                            state[pending.id] = OpRunState(
-                                status="cancelled",
-                                detail=f"Stopped at the requested {cancel_mode} boundary.",
-                            )
-                            finished.add(pending.id)
-                            blocked.add(pending.id)
-                        remaining.clear()
-                        push()
-                        break
-                    for idx, op in enumerate(remaining):
-                        if all(dep in finished for dep in op.depends_on):
-                            del remaining[idx]
-                            break
-                    else:
-                        # Unreachable given a validated (acyclic, all-deps-present) plan —
-                        # guard against an infinite loop rather than hang the worker.
-                        for op in remaining:
-                            state[op.id] = OpRunState(
-                                status="cancelled", detail="Unresolvable dependency ordering."
-                            )
-                            finished.add(op.id)
-                            blocked.add(op.id)
-                            push()
-                        break
-
-                    if any(dep in blocked for dep in op.depends_on):
-                        state[op.id] = OpRunState(
-                            status="cancelled", detail="Skipped: a dependency failed or was cancelled."
-                        )
-                        finished.add(op.id)
-                        blocked.add(op.id)
-                        push()
-                        continue
-
-                    if op.kind is PlanOpKind.create_vm:
-                        try:
-                            # Probe + reopen if a long provision between clones
-                            # let the ESXi session idle-time out.
-                            conn = _live_worker_connection(conn)
-                        except Exception as exc:  # noqa: BLE001 — a connection failure blocks this op only, not the whole plan
-                            state[op.id] = OpRunState(status="error", detail=str(exc))
-                            push()
-                            finished.add(op.id)
-                            blocked.add(op.id)
-                            continue
-                        ok = _run_clone_op(
-                            conn,
-                            db,
-                            op,
-                            ops,
-                            job_id,
-                            state,
-                            push,
-                            owner_role,
-                            request.topology,
-                            image_config[
-                                role_for_template(
-                                    op.params["template"], op.params.get("caType")
-                                )
-                            ],
-                        )
-                    else:
-                        # Real command sequence where one exists (domainJoin,
-                        # …); otherwise the timed stub. `None` = no sequence for
-                        # this op/topology, so fall through to the simulation.
-                        result = _run_sequence_op(
-                            db, op, ops, job_id, owner_role, state, push,
-                            request.topology,
-                        )
-                        ok = _simulate_op(op, state, push) if result is None else result
-
-                    finished.add(op.id)
-                    if not ok:
-                        blocked.add(op.id)
-        finally:
-            if conn is not None:
-                Disconnect(conn.si)
-
-        transport.publish(
-            job_id,
-            DoneMsg(result={"ops": {op_id: s.model_dump() for op_id, s in state.items()}}),
-            status=JobStatus.done,
-            terminal=True,
-        )
-    except VmkitError as exc:
-        status, detail = map_vmkit_error(exc)
-        transport.publish(
-            job_id, ErrorMsg(status=status, detail=detail), status=JobStatus.error, terminal=True
-        )
-    except Exception as exc:  # noqa: BLE001 — surface anything as a terminal error
-        transport.publish(
-            job_id, ErrorMsg(status=500, detail=str(exc)), status=JobStatus.error, terminal=True
-        )
-
-
 _PLAN_TERMINAL = frozenset({"done", "error", "cancelled"})
 
 
@@ -1470,6 +1336,9 @@ def _advance_plan(job_id: str, request, plan: dict, owner_role: str,
             }
         ready, blocked = ready_plan_operations(request.ops, statuses)
 
+    kinds = {
+        op.id: str(getattr(op.kind, "value", op.kind)) for op in request.ops
+    }
     enqueue_failed = False
     for op_id in ready:
         result = db["plan_runs"].update_one(
@@ -1486,6 +1355,10 @@ def _advance_plan(job_id: str, request, plan: dict, owner_role: str,
             run_plan_operation_task.apply_async(
                 args=[job_id, op_id, plan, owner_role, preflight_snapshot, owner],
                 task_id=f"{job_id}:{op_id}",
+                # The one per-op routing decision task_routes can't express:
+                # only createVm opens an ESXi connection, so only it competes
+                # for the esxi queue's clone-concurrency slots.
+                queue="esxi" if kinds.get(op_id) == "createVm" else "provision",
             )
         except Exception as exc:
             enqueue_failed = True
@@ -1623,11 +1496,17 @@ def run_plan_operation_task(
                     db["settings"].find_one({"_id": "global"})
                 )
                 ok = _run_clone_op(
-                    conn, db, op, request.ops, job_id, states, push,
-                    owner_role, request.topology,
+                    conn, db, op, job_id, states, push, owner_role,
                     profiles[role_for_template(
                         op.params["template"], op.params.get("caType")
                     )],
+                )
+            elif op.kind is PlanOpKind.provision:
+                # Deliberately no ESXi connection here — provision ops run on
+                # the provision queue and must never consume esxi capacity.
+                ok = _run_provision_op(
+                    db, op, request.ops, job_id, owner_role, states, push,
+                    request.topology,
                 )
             else:
                 result = _run_sequence_op(
@@ -1682,7 +1561,10 @@ def reconcile_plan_task(
             ops = [
                 PlanOp(**raw)
                 for raw in source.get("operations") or []
-                if raw.get("kind") not in ("createVm", "domainLeave")
+                # provision excluded too: it only makes sense over a fresh
+                # clone — replaying it here would fall through to the `None`
+                # sequence fallback and mark every provision op stopped.
+                if raw.get("kind") not in ("createVm", "provision", "domainLeave")
             ]
             state = {
                 op.id: OpRunState(status="pending")

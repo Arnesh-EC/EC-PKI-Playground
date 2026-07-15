@@ -42,6 +42,46 @@ def test_child_waits_until_every_dependency_finishes() -> None:
     assert blocked == []
 
 
+def test_clone_done_releases_only_its_provision_sibling() -> None:
+    ops = [
+        _op("clone-dc"),
+        _op("clone-dc::provision", "clone-dc"),
+        _op("join", "clone-dc::provision"),
+    ]
+
+    ready, blocked = ready_plan_operations(
+        ops,
+        {"clone-dc": "done", "clone-dc::provision": "pending", "join": "pending"},
+    )
+
+    assert ready == ["clone-dc::provision"]
+    assert blocked == []
+
+
+def test_failed_provision_cancels_dependents_but_not_siblings() -> None:
+    ops = [
+        _op("clone-dc"),
+        _op("clone-dc::provision", "clone-dc"),
+        _op("clone-root"),
+        _op("clone-root::provision", "clone-root"),
+        _op("join", "clone-dc::provision"),
+    ]
+
+    ready, blocked = ready_plan_operations(
+        ops,
+        {
+            "clone-dc": "done",
+            "clone-dc::provision": "error",
+            "clone-root": "done",
+            "clone-root::provision": "pending",
+            "join": "pending",
+        },
+    )
+
+    assert ready == ["clone-root::provision"]
+    assert blocked == ["join"]
+
+
 def test_failed_dependency_blocks_only_its_descendants() -> None:
     ops = [
         _op("clone-dc"),

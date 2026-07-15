@@ -76,7 +76,6 @@ def test_worker_refuses_base_named_clone_before_any_datastore_write():
         conn=object(),  # would blow up if the guard let execution continue
         db=object(),
         op=op,
-        ops=[op],
         job_id="job1",
         state=state,
         push=lambda: None,

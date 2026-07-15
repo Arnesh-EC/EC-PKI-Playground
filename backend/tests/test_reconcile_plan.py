@@ -17,6 +17,7 @@ def test_reconcile_task_is_registered():
 def test_reconcile_source_filter_excludes_destructive_lifecycle_ops():
     operations = [
         {"id": "clone", "kind": "createVm"},
+        {"id": "clone::provision", "kind": "provision"},
         {"id": "join", "kind": "domainJoin"},
         {"id": "publish", "kind": "webServerCert"},
         {"id": "leave", "kind": "domainLeave"},
@@ -24,7 +25,7 @@ def test_reconcile_source_filter_excludes_destructive_lifecycle_ops():
 
     selected = [
         item["id"] for item in operations
-        if item["kind"] not in ("createVm", "domainLeave")
+        if item["kind"] not in ("createVm", "provision", "domainLeave")
     ]
 
     assert selected == ["join", "publish"]
