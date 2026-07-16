@@ -3,7 +3,7 @@
 # prod-deploy.sh — production deploy for EC PKI Playground on a single Linux host.
 #
 # What it does (idempotent — safe to re-run for upgrades):
-#   1. Clone/update the app repo.
+#   1. Update the app repo in place (the checkout this script lives in).
 #   2. Ensure backend/.env exists with the two required secrets.
 #   3. Install backend deps (uv sync) and download the Windows orchestrator
 #      agent (wget from GitHub Releases) into backend/agent/.
@@ -25,7 +25,12 @@ set -euo pipefail
 # ----------------------------------------------------------------------------
 # Config
 # ----------------------------------------------------------------------------
-APP_DIR="${APP_DIR:-$HOME/pki-playground}"
+# This script ships inside the repo, so the checkout it lives in is the default
+# deploy target — no re-clone needed. Override APP_DIR only to bootstrap a fresh
+# checkout somewhere else (then the clone fallback in step 1 kicks in).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_DIR="${APP_DIR:-$REPO_ROOT}"
 REPO_URL="${REPO_URL:-https://github.com/Encryption-Consulting-LLC/PKI-Playground.git}"
 BRANCH="${BRANCH:-master}"
 
@@ -90,7 +95,8 @@ done
 [ -f "$CLOUDFLARED_CONFIG" ] || warn "cloudflared config not found at $CLOUDFLARED_CONFIG — tunnel service will fail until it exists."
 
 # ----------------------------------------------------------------------------
-# 1. Clone / update the repo
+# 1. Update the repo (in place by default — see APP_DIR above; clone only when
+#    APP_DIR points somewhere that isn't a checkout yet)
 # ----------------------------------------------------------------------------
 if [ -d "$APP_DIR/.git" ]; then
   log "Updating existing checkout at $APP_DIR"
