@@ -38,7 +38,7 @@ REPO_URL="${REPO_URL:-https://github.com/Encryption-Consulting-LLC/PKI-Playgroun
 BRANCH="${BRANCH:-master}"
 
 # Origin deployed guest VMs dial home to (baked into each firstboot agent config).
-BACKEND_PUBLIC_URL="${BACKEND_PUBLIC_URL:-https://pqc-lab.encryptionconsulting.com}"
+BACKEND_PUBLIC_URL="${BACKEND_PUBLIC_URL:-https://pqc-playground.encryptionconsulting.com}"
 
 # API bind.
 API_HOST="${API_HOST:-127.0.0.1}"
