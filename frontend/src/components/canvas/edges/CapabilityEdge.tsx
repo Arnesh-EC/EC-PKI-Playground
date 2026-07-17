@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties } from "react"
+import { useId, type CSSProperties } from "react"
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -29,7 +29,6 @@ import { cn } from "@/lib/utils"
 const OFFLINE_RELAY_LABEL_OFFSET_Y = 28
 
 export function CapabilityEdge(props: EdgeProps) {
-  const [hovered, setHovered] = useState(false)
   const gradientId = `service-health-${useId().replaceAll(":", "")}`
   const markerId = `${gradientId}-arrow`
   const edgeType = props.data?.edgeType as EdgeType | undefined
@@ -45,7 +44,9 @@ export function CapabilityEdge(props: EdgeProps) {
       : getSmoothStepPath(props)
   const hasOfflineRelay =
     edgeType === EDGE_TYPE.caHierarchy && props.data?.rootIssuer === true
-  const expanded = hovered || props.selected
+  // The label pill + details only appear once the edge is clicked (selected),
+  // so the canvas stays uncluttered until the user asks for the arrow's story.
+  const expanded = props.selected === true
   const health =
     (props.data?.health as ConnectionHealth | undefined) ??
     (props.data?.staged === true
@@ -191,6 +192,7 @@ export function CapabilityEdge(props: EdgeProps) {
           />
         </g>
       )}
+      {expanded && (
       <EdgeLabelRenderer>
         <div
           className="nodrag nopan absolute z-10"
@@ -201,15 +203,11 @@ export function CapabilityEdge(props: EdgeProps) {
               labelY + (hasOfflineRelay ? OFFLINE_RELAY_LABEL_OFFSET_Y : 0)
             }px)`,
           }}
-          onMouseEnter={() => setHovered(true)}
-          onMouseLeave={() => setHovered(false)}
         >
           <button
             type="button"
             aria-expanded={expanded}
-            aria-label={`${guidance.intent}. Show connection requirements.`}
-            onFocus={() => setHovered(true)}
-            onBlur={() => setHovered(false)}
+            aria-label={`${guidance.intent}. Connection requirements.`}
             className={cn(
               "flex max-w-64 items-center gap-1.5 rounded-full border bg-background/95 px-2 py-1 text-[10px] font-semibold shadow-sm",
               "transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -304,6 +302,7 @@ export function CapabilityEdge(props: EdgeProps) {
           )}
         </div>
       </EdgeLabelRenderer>
+      )}
     </>
   )
 }
