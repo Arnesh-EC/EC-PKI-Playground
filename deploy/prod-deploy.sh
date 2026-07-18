@@ -4,7 +4,9 @@
 #
 # What it does (idempotent — safe to re-run for upgrades):
 #   1. Update the app repo in place (the checkout this script lives in).
-#   2. Ensure backend/.env exists with the two required secrets.
+#   2. Ensure backend/.env and deploy/.env exist — prompting once for any
+#      site-specific value still missing, then persisting it so re-runs are
+#      non-interactive.
 #   3. Install backend deps (uv sync) and download the Windows orchestrator
 #      agent (wget from GitHub Releases) into backend/agent/.
 #   4. Build the frontend and admin app (pnpm build → */dist), both served
@@ -19,9 +21,13 @@
 # The orchestrator binary is a Windows artifact — it is NOT run here; it is
 # fetched so the worker can bundle it into firstboot ISOs.
 #
-# Config is via env vars (all have defaults); override inline, e.g.:
-#   ORCH_RELEASE_REPO=Encryption-Consulting-LLC/pki-orchestrator \
-#   APP_DIR=$HOME/pki-playground ./deploy/prod-deploy.sh
+# This script bakes in no site-specific values, so it is safe to publish. Site
+# config is prompted on the first run and persisted (deploy-time answers in
+# deploy/.env, backend runtime config in backend/.env — both git-ignored); later
+# runs read those files and prompt only for whatever is still missing. Any value
+# can be forced non-interactively by exporting it inline, e.g.:
+#   BACKEND_PUBLIC_URL=https://pki.example.com \
+#   ORCH_RELEASE_REPO=example-org/pki-orchestrator ./deploy/prod-deploy.sh
 #
 set -euo pipefail
 
@@ -34,24 +40,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_DIR="${APP_DIR:-$REPO_ROOT}"
-REPO_URL="${REPO_URL:-https://github.com/Encryption-Consulting-LLC/PKI-Playground.git}"
 BRANCH="${BRANCH:-master}"
 
-# Origin deployed guest VMs dial home to (baked into each firstboot agent config).
-BACKEND_PUBLIC_URL="${BACKEND_PUBLIC_URL:-https://pqc-playground.encryptionconsulting.com}"
+# Persisted deploy-time answers (git-ignored by the repo's `.env` rule). Holds
+# the site-specific, sometimes-secret values this script no longer hardcodes:
+# REPO_URL, ORCH_RELEASE_REPO, GITHUB_TOKEN. Created 0600 (may hold a token).
+DEPLOY_ENV="$SCRIPT_DIR/.env"
+touch "$DEPLOY_ENV" && chmod 600 "$DEPLOY_ENV"
 
-# API bind.
+# Non-sensitive knobs keep plain defaults (localhost / conventional names);
+# override any of them inline. Site-specific values are resolved via ensure_var
+# below (prompt-once, persist) rather than hardcoded here.
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-8000}"
-
-# Orchestrator agent download (wget from GitHub Releases).
-#   ORCH_RELEASE_REPO  owner/repo that publishes the release
-#   ORCH_RELEASE_TAG   git tag, or "latest"
-#   ORCH_ASSET         asset filename on the release
-#   GITHUB_TOKEN       optional — set for a private repo
-ORCH_RELEASE_REPO="${ORCH_RELEASE_REPO:-Encryption-Consulting-LLC/pki-orchestrator}"
-ORCH_RELEASE_TAG="${ORCH_RELEASE_TAG:-latest}"
-ORCH_ASSET="${ORCH_ASSET:-pki-orchestrator.exe}"
+ORCH_RELEASE_TAG="${ORCH_RELEASE_TAG:-latest}"   # git tag, or "latest"
+ORCH_ASSET="${ORCH_ASSET:-pki-orchestrator.exe}" # asset filename on the release
 
 # Datastores are assumed already running; we only health-check them.
 MONGO_URL="${MONGO_URL:-mongodb://localhost:27017}"
@@ -67,6 +70,42 @@ warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[err]\033[0m %s\n' "$*" >&2; exit 1; }
 
 require_tool() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+
+# Resolve a config value and persist it, so re-runs are non-interactive.
+#   ensure_var FILE KEY PROMPT [DEFAULT] [FLAGS]
+# Resolution order: inline env override > value already in FILE > interactive
+# prompt (default in brackets) > DEFAULT. The resolved value is exported for the
+# rest of the run and appended to FILE if not already present (never clobbered).
+# FLAGS (space-separated, any order): `secret` hides the input; `optional`
+# allows an empty result (nothing persisted) instead of aborting.
+ensure_var() {
+  local file="$1" key="$2" prompt="$3" default="${4:-}" flags="${5:-}"
+  local hide=0 opt=0 val="${!key:-}"
+  [[ "$flags" == *secret* ]]   && hide=1
+  [[ "$flags" == *optional* ]] && opt=1
+  if [ -z "$val" ] && [ -f "$file" ]; then
+    # `|| true`: a no-match grep returns 1, which under `set -o pipefail`
+    # would otherwise abort the whole script via `set -e`.
+    val="$(grep -E "^[[:space:]]*${key}=" "$file" | tail -1 | sed 's/^[[:space:]]*[^=]*=//' || true)"
+  fi
+  if [ -z "$val" ]; then
+    if [ -t 0 ]; then
+      if [ "$hide" -eq 1 ]; then read -rs -p "$prompt: " val; echo
+      else read -r -p "$prompt${default:+ [$default]}: " val; fi
+    fi
+    val="${val:-$default}"
+  fi
+  if [ -z "$val" ]; then
+    [ "$opt" -eq 1 ] && { printf -v "$key" '%s' ''; export "$key"; return 0; }
+    die "$key is required — provide it interactively or export it inline."
+  fi
+  printf -v "$key" '%s' "$val"; export "$key"
+  grep -Eq "^[[:space:]]*${key}=" "$file" 2>/dev/null || {
+    printf '%s=%s\n' "$key" "$val" >>"$file"
+    [ "$hide" -eq 1 ] && log "Saved $key to ${file##*/} (hidden)" \
+                      || log "Saved $key to ${file##*/}"
+  }
+}
 
 # Extract host:port from a mongodb:// or redis:// URL and test TCP reachability.
 check_tcp() {
@@ -92,6 +131,19 @@ log "Preflight: checking tools"
 for t in git uv pnpm node wget openssl systemctl loginctl timeout; do
   require_tool "$t"
 done
+
+# Resolve deploy-time config (persisted to deploy/.env; prompted once). REPO_URL
+# defaults to this checkout's own origin remote, so the common in-place upgrade
+# needs no input. ORCH_RELEASE_REPO/GITHUB_TOKEN gate the agent download below.
+ensure_var "$DEPLOY_ENV" REPO_URL \
+  "Git repo URL to deploy from" \
+  "$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+ensure_var "$DEPLOY_ENV" ORCH_RELEASE_REPO \
+  "Orchestrator agent release repo (owner/repo, blank to skip agent download)" \
+  "" optional
+ensure_var "$DEPLOY_ENV" GITHUB_TOKEN \
+  "GitHub token for private release assets (blank for a public repo)" \
+  "" "secret optional"
 
 # ----------------------------------------------------------------------------
 # 1. Update the repo (in place by default — see APP_DIR above; clone only when
@@ -120,7 +172,7 @@ ADMIN="$APP_DIR/admin"
 AGENT_DIR="$BACKEND/agent"
 
 # ----------------------------------------------------------------------------
-# 2. Ensure backend/.env with the two required secrets
+# 2. Ensure backend/.env — generated secrets + prompted-once site config
 # ----------------------------------------------------------------------------
 ENV_FILE="$BACKEND/.env"
 if [ ! -f "$ENV_FILE" ]; then
@@ -128,19 +180,22 @@ if [ ! -f "$ENV_FILE" ]; then
   cp "$BACKEND/.env.example" "$ENV_FILE"
 fi
 
-# Set a key only if it is not already present uncommented (never clobber:
+# Generate a key only if it is not already present uncommented (never clobber:
 # rotating SETTINGS_ENC_KEY would orphan every stored ESXi/template secret).
-ensure_env_key() {
+ensure_generated() {
   local key="$1" value="$2"
-  if grep -Eq "^[[:space:]]*${key}=" "$ENV_FILE"; then
-    return 0
-  fi
+  grep -Eq "^[[:space:]]*${key}=" "$ENV_FILE" && return 0
   printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
   log "Generated $key in .env"
 }
-ensure_env_key SESSION_SECRET "$(openssl rand -base64 32)"
-ensure_env_key SETTINGS_ENC_KEY "$(openssl rand -base64 32)"
-ensure_env_key BACKEND_PUBLIC_URL "$BACKEND_PUBLIC_URL"
+ensure_generated SESSION_SECRET "$(openssl rand -base64 32)"
+ensure_generated SETTINGS_ENC_KEY "$(openssl rand -base64 32)"
+
+# Site config: prompted once, then read from backend/.env on every re-run.
+ensure_var "$ENV_FILE" BACKEND_PUBLIC_URL \
+  "Backend public URL browsers and agents dial (e.g. https://pki.example.com)"
+ensure_var "$ENV_FILE" AGENT_BACKEND_URL \
+  "Agent phone-home URL override (blank = use BACKEND_PUBLIC_URL)" "" optional
 
 grep -Eq '^[[:space:]]*ESXI_HOST=' "$ENV_FILE" || \
   warn "ESXI_* / GUEST_* not set in .env — configure them here or via the operator Settings UI before deploying VMs."
@@ -151,25 +206,33 @@ grep -Eq '^[[:space:]]*ESXI_HOST=' "$ENV_FILE" || \
 log "Installing backend deps (uv sync)"
 ( cd "$BACKEND" && uv sync )
 
-log "Downloading orchestrator agent ($ORCH_RELEASE_REPO@$ORCH_RELEASE_TAG / $ORCH_ASSET)"
 mkdir -p "$AGENT_DIR"
-if [ "$ORCH_RELEASE_TAG" = "latest" ]; then
-  ORCH_URL="https://github.com/$ORCH_RELEASE_REPO/releases/latest/download/$ORCH_ASSET"
-else
-  ORCH_URL="https://github.com/$ORCH_RELEASE_REPO/releases/download/$ORCH_RELEASE_TAG/$ORCH_ASSET"
-fi
-WGET_ARGS=(--quiet --show-progress)
-[ -n "${GITHUB_TOKEN:-}" ] && WGET_ARGS+=(--header="Authorization: Bearer $GITHUB_TOKEN")
-TMP_AGENT="$(mktemp)"
-if wget "${WGET_ARGS[@]}" -O "$TMP_AGENT" "$ORCH_URL" && [ -s "$TMP_AGENT" ]; then
-  mv "$TMP_AGENT" "$AGENT_DIR/pki-orchestrator.exe"
-  log "Agent updated ($(du -h "$AGENT_DIR/pki-orchestrator.exe" | cut -f1))"
-else
-  rm -f "$TMP_AGENT"
+if [ -z "${ORCH_RELEASE_REPO:-}" ]; then
   if [ -f "$AGENT_DIR/pki-orchestrator.exe" ]; then
-    warn "Agent download failed ($ORCH_URL) — keeping the existing pki-orchestrator.exe."
+    warn "ORCH_RELEASE_REPO unset — skipping agent download; keeping the existing pki-orchestrator.exe."
   else
-    die "Agent download failed ($ORCH_URL) and no existing binary present. Fix ORCH_RELEASE_* (and GITHUB_TOKEN if private)."
+    warn "ORCH_RELEASE_REPO unset and no bundled agent present — firstboot ISOs will be agent-free."
+  fi
+else
+  log "Downloading orchestrator agent ($ORCH_RELEASE_REPO@$ORCH_RELEASE_TAG / $ORCH_ASSET)"
+  if [ "$ORCH_RELEASE_TAG" = "latest" ]; then
+    ORCH_URL="https://github.com/$ORCH_RELEASE_REPO/releases/latest/download/$ORCH_ASSET"
+  else
+    ORCH_URL="https://github.com/$ORCH_RELEASE_REPO/releases/download/$ORCH_RELEASE_TAG/$ORCH_ASSET"
+  fi
+  WGET_ARGS=(--quiet --show-progress)
+  [ -n "${GITHUB_TOKEN:-}" ] && WGET_ARGS+=(--header="Authorization: Bearer $GITHUB_TOKEN")
+  TMP_AGENT="$(mktemp)"
+  if wget "${WGET_ARGS[@]}" -O "$TMP_AGENT" "$ORCH_URL" && [ -s "$TMP_AGENT" ]; then
+    mv "$TMP_AGENT" "$AGENT_DIR/pki-orchestrator.exe"
+    log "Agent updated ($(du -h "$AGENT_DIR/pki-orchestrator.exe" | cut -f1))"
+  else
+    rm -f "$TMP_AGENT"
+    if [ -f "$AGENT_DIR/pki-orchestrator.exe" ]; then
+      warn "Agent download failed ($ORCH_URL) — keeping the existing pki-orchestrator.exe."
+    else
+      die "Agent download failed ($ORCH_URL) and no existing binary present. Fix ORCH_RELEASE_* (and GITHUB_TOKEN if private)."
+    fi
   fi
 fi
 

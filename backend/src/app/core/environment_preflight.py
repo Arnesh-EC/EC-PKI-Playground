@@ -160,17 +160,22 @@ def preflight_control_plane(
             )
         )
 
-    callback = settings.backend_public_url or ""
+    # The agent phones home to the *effective* agent URL (AGENT_BACKEND_URL when
+    # set, else BACKEND_PUBLIC_URL) — that's what's baked into orchestrator.toml.
+    callback = settings.effective_agent_backend_url or ""
     parsed = urlparse(callback)
     callback_ok = parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    overridden = bool(settings.agent_backend_url)
     checks.append(
         EnvironmentCheck(
             key="backendCallback",
             ok=callback_ok,
             detail=(
-                f"Guest callback URL is '{callback}'."
+                f"Guest callback URL is '{callback}'"
+                + (" (AGENT_BACKEND_URL override)." if overridden else ".")
                 if callback_ok
-                else "BACKEND_PUBLIC_URL must be an absolute HTTP(S) URL."
+                else "BACKEND_PUBLIC_URL (or AGENT_BACKEND_URL) must be an "
+                "absolute HTTP(S) URL."
             ),
         )
     )

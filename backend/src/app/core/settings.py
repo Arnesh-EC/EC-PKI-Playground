@@ -118,8 +118,8 @@ class Settings(BaseSettings):
     #   ``ORCHESTRATOR_AGENT_PATH`` — filesystem path on both the API and worker
     #     hosts to the same pki-orchestrator agent binary embedded into each
     #     firstboot ISO. The API hashes it during preflight; the worker bundles it.
-    #   ``BACKEND_PUBLIC_URL`` — the base URL a booted guest VM dials home to
-    #     (``http(s)://host:port``), baked into the agent's orchestrator.toml.
+    #   ``BACKEND_PUBLIC_URL`` — the browser-facing origin (``http(s)://host:port``);
+    #     also the *default* target baked into the agent's orchestrator.toml.
     # If ORCHESTRATOR_AGENT_PATH is unset, the backend uses the repo-bundled
     # backend/agent/pki-orchestrator.exe when present. If no bundled binary is
     # present, the default firstboot ISO carries no agent, so it is safe on
@@ -128,6 +128,16 @@ class Settings(BaseSettings):
     # the VM registry and is dispatched after the agent phones home.
     orchestrator_agent_path: str | None = bundled_orchestrator_agent_path()
     backend_public_url: str | None = None
+
+    # ``AGENT_BACKEND_URL`` — optional override for the origin baked into the
+    # agent's orchestrator.toml (the phone-home target), decoupling it from the
+    # browser-facing ``BACKEND_PUBLIC_URL``. Guest VMs share the backend's LAN,
+    # so pointing agents straight at the LAN backend avoids routing phone-home
+    # out to the public (Cloudflare-fronted) FQDN and back — see the phone-home
+    # 404 diagnosis. Unset → agents fall back to ``backend_public_url``. Caveat:
+    # the agent validates TLS against public webpki-roots, so a private-IP target
+    # behind a self-signed cert needs a plain ``http://`` (→ ``ws://``) URL.
+    agent_backend_url: str | None = None
 
     # How long the clone worker waits for a freshly-booted VM's agent to phone
     # home before failing the provision op. Role/feature installs now run as
@@ -153,6 +163,12 @@ class Settings(BaseSettings):
     @property
     def orchestrator_bundling_enabled(self) -> bool:
         return bool(self.orchestrator_agent_path and self.backend_public_url)
+
+    @property
+    def effective_agent_backend_url(self) -> str | None:
+        """The origin baked into the agent's orchestrator.toml — the explicit
+        ``AGENT_BACKEND_URL`` override when set, else ``BACKEND_PUBLIC_URL``."""
+        return self.agent_backend_url or self.backend_public_url
 
     @property
     def oidc_enabled(self) -> bool:

@@ -919,7 +919,7 @@ def _run_clone_op(
                             OrchestratorAgentConfig(
                                 vm_id=vm_id,
                                 agent_token=token,
-                                backend_url=settings.backend_public_url,
+                                backend_url=settings.effective_agent_backend_url,
                                 role=owner_role,
                             )
                         ),
